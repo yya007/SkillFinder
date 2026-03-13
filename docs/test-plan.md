@@ -18,13 +18,13 @@ SkillFinder follows strict Test-Driven Development. All tests are written before
 ```
                   ┌───────────────┐
                   │  quality/     │  ← Recall@30, real index, real Ollama
-                  │  (2 files)    │    skipped in CI without index
+                  │  (1 file)     │    skipped in CI without index
                 ┌─┴───────────────┴─┐
                 │  integration/     │  ← Pipeline end-to-end, mocked Ollama
                 │  (2 files)        │
               ┌─┴───────────────────┴─┐
               │  unit/                │  ← Pure logic, no I/O
-              │  (5 files, ~120 cases)│
+              │  (6 files, ~130 cases)│
               └───────────────────────┘
 ```
 
