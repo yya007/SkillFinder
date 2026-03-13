@@ -100,7 +100,7 @@ class TestGetLatestRelease:
     def test_raises_on_api_error(self):
         with patch("requests.get") as mock_get:
             mock_get.return_value = MagicMock(status_code=404, text="Not Found")
-            with pytest.raises(Exception):
+            with pytest.raises((RuntimeError, OSError, ValueError)):
                 get_latest_release()
 
 

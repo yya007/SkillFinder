@@ -55,7 +55,11 @@ class TestEmbedQuery:
             embed_query("deploy kubernetes")
             call_json = mock_post.call_args[1].get("json") or mock_post.call_args[0][1]
             sent_text = call_json["input"][0]
-            assert sent_text.startswith(QUERY_PREFIX) or "Instruct:" in sent_text
+            assert sent_text.startswith(QUERY_PREFIX), (
+                f"Expected text to start with QUERY_PREFIX.\n"
+                f"  QUERY_PREFIX: {QUERY_PREFIX!r}\n"
+                f"  Sent text:    {sent_text!r}"
+            )
 
     def test_returns_1d_float32_vector(self):
         rng = np.random.default_rng(0)
@@ -246,11 +250,15 @@ class TestApplyFilters:
             assert skill["quality"]["safety_flag"] is False
 
     def test_preserves_order(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=[], sources=[], safety_only=False)
-        # Order must match input order
+        # Filter to a strict subset so ordering is non-trivial to verify
+        result = apply_filters(
+            skills_for_search, platforms=["claude_code"], sources=[], safety_only=False
+        )
         result_names = [s["name"] for s in result]
-        input_names = [s["name"] for s in skills_for_search]
-        assert result_names == [n for n in input_names if n in result_names]
+        # Build expected: input_names filtered to only those in results (original order)
+        result_set = set(result_names)
+        expected_order = [s["name"] for s in skills_for_search if s["name"] in result_set]
+        assert result_names == expected_order
 
     def test_empty_input_returns_empty(self):
         assert apply_filters([], platforms=["claude_code"], sources=[], safety_only=True) == []
@@ -325,6 +333,17 @@ class TestSearch:
             results = search("test", index, metadata, platforms=["claude_code"])
         for r in results:
             assert "claude_code" in r.get("install_cmd", {})
+
+    @pytest.mark.parametrize("propose_n", [1, 2, 3])
+    def test_result_count_does_not_exceed_propose_n_times_3(self, tmp_data_dir, propose_n):
+        vec = self._make_query_vec()
+        index, metadata = load_index(
+            str(tmp_data_dir / "index.faiss"),
+            str(tmp_data_dir / "metadata.jsonl"),
+        )
+        with patch("scripts.search.embed_query", return_value=vec):
+            results = search("test", index, metadata, propose_n=propose_n)
+        assert len(results) <= propose_n * 3
 
     def test_empty_results_when_filters_exclude_all(self, tmp_data_dir):
         vec = self._make_query_vec()

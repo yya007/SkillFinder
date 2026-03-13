@@ -2,11 +2,13 @@
 Integration tests for the full offline pipeline:
   normalize → embed → build_index
 
-Ollama is mocked with a deterministic fake. All file I/O uses real temp dirs.
-Tests verify end-to-end row alignment and output correctness.
+Ollama is mocked with a deterministic fake via unittest.mock.patch.
+All file I/O uses real temp dirs. Tests verify end-to-end row alignment
+and output correctness.
 """
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import faiss
 import numpy as np
@@ -24,6 +26,11 @@ from pipeline.normalize import normalize
 FIXTURES_RAW = Path(__file__).parent.parent / "fixtures" / "raw"
 
 
+def _patch_embed(mock_fn):
+    """Context manager that patches pipeline.embed.embed_batch with mock_fn."""
+    return patch("pipeline.embed.embed_batch", side_effect=mock_fn)
+
+
 # ---------------------------------------------------------------------------
 # Full pipeline: normalize → embed → build_index
 # ---------------------------------------------------------------------------
@@ -37,8 +44,7 @@ class TestFullPipeline:
         assert count > 0
 
         # Step 2: embed (mocked Ollama)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("pipeline.embed.embed_batch", mock_ollama_embed)
+        with _patch_embed(mock_ollama_embed):
             run_embed(
                 unified,
                 str(tmp_path / "embeddings.npy"),
@@ -64,8 +70,7 @@ class TestFullPipeline:
         unified = str(tmp_path / "unified_skills.jsonl")
         normalize(raw_files, unified)
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("pipeline.embed.embed_batch", mock_ollama_embed)
+        with _patch_embed(mock_ollama_embed):
             run_embed(unified, str(tmp_path / "embeddings.npy"), str(tmp_path / "ordered.jsonl"))
 
         run_build_index(
@@ -76,7 +81,6 @@ class TestFullPipeline:
             str(tmp_path / "version.txt"),
         )
 
-        # Load ordered.jsonl names
         ordered_names = [json.loads(l)["name"] for l in open(tmp_path / "ordered.jsonl")]
         meta_names = [json.loads(l)["name"] for l in open(tmp_path / "metadata.jsonl")]
         assert ordered_names == meta_names
@@ -86,8 +90,7 @@ class TestFullPipeline:
         unified = str(tmp_path / "unified_skills.jsonl")
         normalize(raw_files, unified)
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("pipeline.embed.embed_batch", mock_ollama_embed)
+        with _patch_embed(mock_ollama_embed):
             run_embed(unified, str(tmp_path / "embeddings.npy"), str(tmp_path / "ordered.jsonl"))
 
         run_build_index(
@@ -111,8 +114,7 @@ class TestFullPipeline:
         ids = [r["id"] for r in records]
         assert len(ids) == len(set(ids)), "Duplicate IDs found in normalized output"
 
-    def test_pipeline_quality_gate_enforced(self, tmp_path, mock_ollama_embed):
-        """normalize raises QualityGateError when output is below min_skills."""
+    def test_pipeline_quality_gate_enforced(self, tmp_path):
         from pipeline.normalize import QualityGateError
         raw_files = [str(p) for p in FIXTURES_RAW.glob("*.jsonl")]
         unified = str(tmp_path / "unified_skills.jsonl")
@@ -124,8 +126,7 @@ class TestFullPipeline:
         unified = str(tmp_path / "unified_skills.jsonl")
         normalize(raw_files, unified)
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("pipeline.embed.embed_batch", mock_ollama_embed)
+        with _patch_embed(mock_ollama_embed):
             run_embed(unified, str(tmp_path / "embeddings.npy"), str(tmp_path / "ordered.jsonl"))
 
         run_build_index(

@@ -13,6 +13,7 @@ Tests cover:
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import faiss
 import numpy as np
@@ -126,6 +127,21 @@ class TestBuildIndex:
     def test_raises_on_wrong_shape(self):
         with pytest.raises(ValueError):
             build_index(np.zeros((10, DIM + 1), dtype=np.float32))
+
+    def test_ivf_threshold_boundary(self):
+        """Below threshold → IndexFlatIP; at threshold → IndexIVFFlat."""
+        import pipeline.build_index as bi_module
+        with patch.object(bi_module, "IVF_THRESHOLD", 5):
+            # 4 vectors: below threshold → FlatIP
+            vecs_small = random_embeddings(4)
+            l2_normalize(vecs_small)
+            assert isinstance(build_index(vecs_small), faiss.IndexFlatIP)
+
+            # 5 vectors: at threshold → IVFFlat (nlist ≤ n so training succeeds)
+            with patch.object(bi_module, "IVF_NLIST", 2):
+                vecs_large = random_embeddings(5)
+                l2_normalize(vecs_large)
+                assert isinstance(build_index(vecs_large), faiss.IndexIVFFlat)
 
 
 # ---------------------------------------------------------------------------

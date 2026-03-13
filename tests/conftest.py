@@ -1,4 +1,5 @@
 """Shared fixtures for all SkillFinder tests."""
+import hashlib
 import json
 import os
 import tempfile
@@ -7,6 +8,12 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+
+
+def _skill_id(repo_url: str) -> str:
+    """Compute the canonical skill ID — mirrors pipeline.normalize.skill_id."""
+    key = repo_url.lower().rstrip("/").removesuffix(".git")
+    return hashlib.sha256(key.encode()).hexdigest()
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 RAW_DIR = FIXTURES_DIR / "raw"
@@ -33,14 +40,19 @@ def make_skill(
     last_updated="2026-01-01",
 ) -> dict:
     """Return a fully-populated unified skill record."""
+    cats = categories or ["testing"]
+    trigs = triggers or []
+    text = f"{name}. {description} Categories: {', '.join(cats)}."
+    if trigs:
+        text += f" Use when: {'; '.join(trigs)}."
     return {
-        "id": "abc123",
+        "id": _skill_id(repo_url),
         "repo_url": repo_url,
         "name": name,
         "description": description,
         "source": source or ["skillsmp"],
-        "categories": categories or ["testing"],
-        "triggers": triggers or [],
+        "categories": cats,
+        "triggers": trigs,
         "install_cmd": install_cmd or {"claude_code": f"/plugin install {name}"},
         "quality": {
             "stars": stars,
@@ -50,7 +62,7 @@ def make_skill(
             "safety_flag": safety_flag,
             "last_updated": last_updated,
         },
-        "embedding_text": f"{name}. {description} Categories: testing.",
+        "embedding_text": text,
     }
 
 
