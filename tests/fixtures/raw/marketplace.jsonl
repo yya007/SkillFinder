@@ -1,0 +1,2 @@
+{"repo_url": "https://github.com/anthropics/skills", "name": "git-commit-assistant", "description": "Write conventional commit messages from staged diffs with scope and breaking-change detection.", "source": "marketplace", "raw_metadata": {"official": true, "stars": 312, "pushed_at": "2026-03-01"}}
+{"repo_url": "https://github.com/user/markdown-formatter", "name": "markdown-formatter", "description": "Format, lint, and auto-fix Markdown documents to a consistent style.", "source": "marketplace", "raw_metadata": {"official": false, "stars": 28, "pushed_at": "2026-02-10"}}

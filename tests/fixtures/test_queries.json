@@ -1,0 +1,102 @@
+[
+  {
+    "query": "deploy kubernetes clusters with automated rollbacks",
+    "expected_skill_name": "kubernetes-deployer",
+    "category": "devops"
+  },
+  {
+    "query": "manage docker compose stacks",
+    "expected_skill_name": "docker-compose-manager",
+    "category": "devops"
+  },
+  {
+    "query": "trigger github actions workflows from agent",
+    "expected_skill_name": "github-actions-runner",
+    "category": "ci-cd"
+  },
+  {
+    "query": "apply terraform infrastructure with state management",
+    "expected_skill_name": "terraform-manager",
+    "category": "iac"
+  },
+  {
+    "query": "scrape web pages with javascript rendering",
+    "expected_skill_name": "web-scraper-pro",
+    "category": "web"
+  },
+  {
+    "query": "optimize slow sql queries with index suggestions",
+    "expected_skill_name": "sql-query-optimizer",
+    "category": "database"
+  },
+  {
+    "query": "write conventional commit messages from staged diffs",
+    "expected_skill_name": "git-commit-assistant",
+    "category": "git"
+  },
+  {
+    "query": "deploy aws lambda functions with environment configuration",
+    "expected_skill_name": "aws-lambda-deployer",
+    "category": "cloud"
+  },
+  {
+    "query": "format and lint markdown documents",
+    "expected_skill_name": "markdown-formatter",
+    "category": "writing"
+  },
+  {
+    "query": "run pytest and report test failures",
+    "expected_skill_name": "python-test-runner",
+    "category": "testing"
+  },
+  {
+    "query": "mock http api server for testing",
+    "expected_skill_name": "api-mock-server",
+    "category": "testing"
+  },
+  {
+    "query": "send slack channel notifications with attachments",
+    "expected_skill_name": "slack-notifier",
+    "category": "communication"
+  },
+  {
+    "query": "k8s blue green deployment automation",
+    "expected_skill_name": "kubernetes-deployer",
+    "category": "devops"
+  },
+  {
+    "query": "serverless function deployment on amazon web services",
+    "expected_skill_name": "aws-lambda-deployer",
+    "category": "cloud"
+  },
+  {
+    "query": "container orchestration health checks",
+    "expected_skill_name": "kubernetes-deployer",
+    "category": "devops"
+  },
+  {
+    "query": "infrastructure as code plan and apply",
+    "expected_skill_name": "terraform-manager",
+    "category": "iac"
+  },
+  {
+    "query": "sql execution plan analysis",
+    "expected_skill_name": "sql-query-optimizer",
+    "category": "database"
+  },
+  {
+    "query": "git conventional commits breaking change detection",
+    "expected_skill_name": "git-commit-assistant",
+    "category": "git"
+  },
+  {
+    "query": "continuous integration pipeline trigger and monitor",
+    "expected_skill_name": "github-actions-runner",
+    "category": "ci-cd"
+  },
+  {
+    "query": "docker container stack dependency resolution",
+    "expected_skill_name": "docker-compose-manager",
+    "category": "devops"
+  }
+]
