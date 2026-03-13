@@ -46,10 +46,11 @@ The pre-built FAISS index is the core value delivery of SkillFinder. Without an 
    - `marketplace_crawler.py` (~5min)
 5. **Normalize** (`pipeline/normalize.py`)
 6. **Quality gate — pre-embed**: assert `unified_skills.jsonl` has ≥ 8,000 records; fail fast if not
-7. **Embed** (`pipeline/embed.py --model qwen3-embedding-8b --api openrouter`)
-8. **Build index** (`pipeline/build_index.py`)
-9. **Quality gate — post-build**: assert index skill count is within 80% of previous release count
-10. **Package** (`tar -czf skill-finder-index-$(date +%Y%m%d).tar.gz data/qwen/ data/minilm/ data/version.txt`)
+7. **Start Ollama + pull model**
+8. **Embed** (`pipeline/embed.py`) via local Ollama
+9. **Build index** (`pipeline/build_index.py`)
+10. **Quality gate — post-build**: assert index skill count is within 80% of previous release count
+11. **Package** (`tar -czf skill-finder-index-$(date +%Y%m%d).tar.gz data/index.faiss data/metadata.jsonl data/version.txt`)
 11. **Publish GitHub Release** with release body including:
     - Skill count
     - SHA256 of the artifact
@@ -61,14 +62,13 @@ The pre-built FAISS index is the core value delivery of SkillFinder. Without an 
 | Secret | Used by | Value |
 |--------|---------|-------|
 | `GITHUB_TOKEN` | All crawlers using GitHub API | Auto-provided by Actions |
-| `OPENROUTER_API_KEY` | `embed.py` for Qwen3-8B embeddings | Store in repo secrets |
 
-No other secrets are needed. Crawlers that don't require auth (ClawHub README parse, SkillHub scrape) run without secrets.
+No other secrets are needed. Embedding runs locally via Ollama in CI.
 
 ### F3 — Quality Gates
 
 **Gate 1** (after normalize): `len(unified_skills) >= 8000`
-- If fail: post failure annotation, do not proceed to embed (saves ~$0.04)
+- If fail: post failure annotation, do not proceed to embed
 
 **Gate 2** (after build): current index count ≥ 80% of previous release count
 - Previous count is read from the latest GitHub Release body
@@ -144,9 +144,14 @@ jobs:
           echo "Unified skill count: $COUNT"
           [ "$COUNT" -ge 8000 ] || (echo "Quality gate failed: only $COUNT skills" && exit 1)
 
-      - name: Embed (Qwen3-8B + MiniLM)
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      - name: Install Ollama and pull model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+          ollama pull qwen3-embedding:0.6b
+
+      - name: Embed (Qwen3-Embedding-0.6B via Ollama)
         run: python pipeline/embed.py
 
       - name: Build FAISS index
@@ -161,9 +166,7 @@ jobs:
         run: |
           DATE=$(date +%Y%m%d)
           tar -czf skill-finder-index-${DATE}.tar.gz \
-            data/qwen/index.faiss data/qwen/metadata.jsonl \
-            data/minilm/index.faiss data/minilm/metadata.jsonl \
-            data/version.txt
+            data/index.faiss data/metadata.jsonl data/version.txt
           SHA=$(sha256sum skill-finder-index-${DATE}.tar.gz | awk '{print $1}')
           echo "ARTIFACT=skill-finder-index-${DATE}.tar.gz" >> $GITHUB_ENV
           echo "SHA256=$SHA" >> $GITHUB_ENV
@@ -239,14 +242,12 @@ pyyaml>=6.0
 beautifulsoup4>=4.12
 lxml>=5.0
 
-# Embedding
-openai>=1.30
-sentence-transformers>=3.0
+# Embedding + Index
 numpy>=1.26
-
-# Index
 faiss-cpu>=1.8
 ```
+
+Ollama is installed as a system dependency via the install script, not as a Python package.
 
 ---
 
@@ -256,7 +257,7 @@ GitHub Actions sends email on workflow failure to the repo owner. No additional 
 
 If the weekly job fails consistently:
 1. Check `Actions` tab for error output
-2. Common causes: GitHub API rate limit changes, SkillHub scraping broken, OpenRouter API key expired
+2. Common causes: GitHub API rate limit changes, SkillHub scraping broken, Ollama install script URL changed, model name changed
 
 ---
 
@@ -272,7 +273,7 @@ Tags follow the format `index-YYYYMMDD` (e.g., `index-20260310`). This is not Se
 |--------|--------|
 | Weekly job success rate | ≥ 95% over rolling 12 weeks |
 | Pipeline runtime | ≤ 90 min |
-| Release artifact size | < 150MB |
+| Release artifact size | < 100MB |
 | Quality gate catches regressions | 100% of >20% drops |
 | `update_index.py` download + verify success rate | ≥ 99% |
 | Time from crawl to published release | ≤ 2 hours |

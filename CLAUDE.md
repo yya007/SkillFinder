@@ -24,10 +24,8 @@ skill-finder/
 │   └── requirements.txt
 │
 ├── data/                             # Pre-built index (downloaded, gitignored)
-│   ├── qwen/index.faiss
-│   ├── qwen/metadata.jsonl
-│   ├── minilm/index.faiss
-│   ├── minilm/metadata.jsonl
+│   ├── index.faiss
+│   ├── metadata.jsonl
 │   └── version.txt
 │
 ├── crawlers/                         # CI/CD only — not shipped to users
@@ -64,7 +62,7 @@ skill-finder/
 ## Key Design Decisions
 
 - **Local-first:** FAISS runs on-device; zero infrastructure, zero per-query cost.
-- **Dual index:** Qwen3-Embedding-0.6B (preferred, via Ollama) and MiniLM (bundled fallback). The index used at search time must match the index used at build time — they are stored separately under `data/qwen/` and `data/minilm/`.
+- **Single model:** Qwen3-Embedding-0.6B via Ollama — used identically in CI (to build the index) and at runtime (to embed queries). One index, no compatibility concerns.
 - **Stable IDs:** `sha256(normalized_repo_url)`. Never use sequential integers.
 - **Crawlers are CI-only:** The `crawlers/` and `pipeline/` directories are not included in the skill artifact shipped to users. Only `scripts/` and `data/` ship.
 - **Dedup canonical key:** lowercase GitHub repo URL, `.git` suffix stripped.

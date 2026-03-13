@@ -13,8 +13,7 @@ OFFLINE PIPELINE (GitHub Actions, weekly)
        ↓
   Normalizer          Deduplicate, merge metadata, quality filter
        ↓
-  Embedder            Qwen3-Embedding-0.6B via OpenRouter API
-       ↓              (also produces MiniLM fallback embeddings)
+  Embedder            Qwen3-Embedding-0.6B via Ollama (same model as runtime)
   Index Builder       FAISS IndexFlatIP, L2-normalized vectors
        ↓
   GitHub Release      skill-finder-index-YYYYMMDD.tar.gz (~100MB)
@@ -26,9 +25,9 @@ RUNTIME (User's machine, inside Claude Code)
        ↓
   search.py           Detect available embedding model
        ↓
-  Embed query         Tier 1: Ollama / Tier 2: MiniLM / Tier 3: API
+  Embed query         Ollama (qwen3-embedding:0.6b) — required
        ↓
-  FAISS search        Load matching index (qwen/ or minilm/)
+  FAISS search        Load data/index.faiss
        ↓
   Attribute filter    --platform, --source, --safety_only
        ↓
@@ -75,7 +74,7 @@ Three sequential scripts that transform raw crawler output into a deployable ind
 
 These ship with the skill and run on the user's machine.
 
-- **`search.py`** — the main entry point. Detects available embedding model, loads matching FAISS index, applies attribute filters, returns a candidate pool in FAISS score order for the agent to evaluate.
+- **`search.py`** — the main entry point. Embeds query via Ollama, loads `data/index.faiss`, applies attribute filters, returns a candidate pool in FAISS score order for the agent to evaluate.
 - **`fetch_skill.py`** — fetches raw `SKILL.md` from a GitHub repo (tries `main`, `master`, subdirectory patterns).
 - **`update_index.py`** — checks GitHub Releases API for a newer index, downloads and verifies SHA256, extracts into `data/`.
 
@@ -85,34 +84,27 @@ Not committed to git (too large). Downloaded by `update_index.py` or manually.
 
 ```
 data/
-├── qwen/
-│   ├── index.faiss       # FAISS index built with Qwen3 embeddings
-│   └── metadata.jsonl    # Row-aligned skill metadata
-├── minilm/
-│   ├── index.faiss       # FAISS index built with MiniLM embeddings
-│   └── metadata.jsonl    # Same records, same row order
-└── version.txt           # Release date + skill count + SHA256
+├── index.faiss       # FAISS index (Qwen3-Embedding-0.6B)
+├── metadata.jsonl    # Row-aligned skill metadata
+└── version.txt       # Release date + skill count + SHA256
 ```
 
-**Critical invariant:** The FAISS index in `data/qwen/` was built with Qwen3 embeddings; it must only be searched with Qwen3 query embeddings. Mixing models produces garbage results. `search.py` enforces this by selecting the index directory based on which embedding model is actually used.
+The same model (Qwen3-Embedding-0.6B via Ollama) is used in CI to build the index and at runtime to embed queries, so index/query compatibility is guaranteed by construction.
 
 ---
 
 ## Data Flow: Embedding Consistency
 
 ```
-BUILD TIME                          QUERY TIME
-──────────                          ──────────
-Qwen3-8B (OpenRouter)               Qwen3-0.6b (Ollama) ──→ data/qwen/index.faiss
-  → data/qwen/embeddings.npy              OR
-  → data/qwen/index.faiss           OpenRouter API       ──→ data/qwen/index.faiss
-
-MiniLM (sentence-transformers)      MiniLM (bundled)     ──→ data/minilm/index.faiss
-  → data/minilm/embeddings.npy
-  → data/minilm/index.faiss
+BUILD TIME (CI)                     QUERY TIME (user machine)
+───────────────                     ─────────────────────────
+Ollama qwen3-embedding:0.6b         Ollama qwen3-embedding:0.6b
+  → data/embeddings.npy               → embed query vector
+  → data/index.faiss                  → search data/index.faiss
+  → data/metadata.jsonl
 ```
 
-The Qwen3 variants (0.6B vs 8B) produce embeddings in the same space — the 0.6B model is a distilled version of the 8B, and both use the same instruction-tuned embedding protocol. This allows building the index with the more powerful 8B (better quality) and searching with the cheaper 0.6B locally.
+The same model binary runs in both environments. There is no version mismatch risk.
 
 ---
 
@@ -138,9 +130,8 @@ Multiple `--platform` values are OR'd (e.g., `--platform claude_code --platform 
 |-----------|------|
 | FAISS index (20K skills × 1024 dims × float32) | ~80MB |
 | Metadata JSONL (20K × ~500 bytes) | ~10MB |
-| Compressed release artifact | ~50–80MB |
-| MiniLM index (20K × 384 dims × float32) | ~30MB |
-| Total user disk footprint | ~100–200MB |
+| Compressed release artifact | ~50–70MB |
+| Total user disk footprint | ~100MB |
 
 ---
 

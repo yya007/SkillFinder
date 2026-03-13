@@ -50,8 +50,8 @@ Just ask Claude:
 ### CLI
 
 ```bash
-# Search
-python scripts/search.py "deploy kubernetes clusters" --top_k 5
+# Search (returns 30 candidates, Claude proposes best 10)
+python scripts/search.py "deploy kubernetes clusters" --propose 10
 
 # Get full SKILL.md for a specific result
 python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
@@ -74,30 +74,23 @@ After deduplication and quality filtering: **10,000–20,000 unique skills** in 
 
 ## How it works
 
-1. **Offline pipeline** (GitHub Actions, weekly): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B → builds FAISS index → publishes as a GitHub Release artifact.
+1. **Offline pipeline** (GitHub Actions, weekly): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → publishes as a GitHub Release artifact.
 
-2. **Runtime**: your query is embedded locally → FAISS nearest-neighbor search → re-ranked by quality and recency → results returned to agent.
+2. **Runtime**: your query is embedded locally via Ollama → FAISS nearest-neighbor search → candidate pool returned to Claude → Claude selects and ranks the best matches.
 
 3. **Deep dive**: agent can fetch the raw `SKILL.md` from any result's GitHub repo for detailed analysis before installing.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full technical design.
 
-## Embedding models
+## Embedding model
 
-| Tier | Model | When used |
-|------|-------|-----------|
-| 1 | Qwen3-Embedding-0.6B (Ollama) | Ollama running locally |
-| 2 | all-MiniLM-L6-v2 (bundled) | Ollama not available |
-| 3 | Qwen3-Embedding-8B (OpenRouter API) | Explicit API preference |
-
-The index shipped with each tier is built with the same model used at query time.
+**Qwen3-Embedding-0.6B via Ollama** — the same model is used to build the index (CI) and embed queries (runtime), so there is no compatibility complexity.
 
 ## Requirements
 
 - Python 3.10+
 - `numpy`, `faiss-cpu`, `requests` (see `scripts/requirements.txt`)
-- `sentence-transformers` — optional, for MiniLM fallback
-- Ollama with `qwen3-embedding:0.6b` — optional, for best quality
+- [Ollama](https://ollama.com/install) with `qwen3-embedding:0.6b` pulled — required
 
 ## License
 

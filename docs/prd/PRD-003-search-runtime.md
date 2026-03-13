@@ -9,12 +9,11 @@
 
 ## Problem
 
-We have a FAISS index. We need the runtime search layer that users and the agent actually call: a script that takes a natural language query plus optional attribute filters, embeds locally, searches the index, and returns a candidate pool — in raw FAISS score order — for the agent to read and evaluate. Re-ranking is the agent's job, not the script's.
+We have a FAISS index. We need the runtime search layer that users and the agent actually call: a script that takes a natural language query plus optional attribute filters, embeds locally via Ollama, searches the index, and returns a candidate pool — in raw FAISS score order — for the agent to read and evaluate. Re-ranking is the agent's job, not the script's.
 
 ## Goals
 
 - Sub-200ms search latency on CPU with local Ollama embedding
-- Zero required configuration — auto-detect available embedding tier
 - Attribute-based filtering: platform (claude_code / codex / openclaw), source, safety
 - Return `propose_n × 3` candidates so the agent has enough to make a good selection
 - Structured JSON output suitable for agent consumption
@@ -49,13 +48,9 @@ Flags:
 **Flow:**
 
 1. Parse arguments; derive `candidate_count = propose_n * 3`
-2. Detect embedding tier (in order):
-   a. Run `ollama list`; if `qwen3-embedding` appears → Tier 1, use `data/qwen/`
-   b. Try `import sentence_transformers` → Tier 2, use `data/minilm/`
-   c. Check `OPENROUTER_API_KEY` env var → Tier 3, use `data/qwen/`
-   d. None available → print install instructions, exit 1
-3. Load FAISS index and metadata from the appropriate `data/{model}/` directory
-4. Embed query with selected model (apply instruction prefix for Qwen3)
+2. Verify Ollama is reachable (`GET http://localhost:11434/`) — if not, print install instructions and exit 1
+3. Load `data/index.faiss` and `data/metadata.jsonl`
+4. Embed query via Ollama (`qwen3-embedding:0.6b`) with instruction prefix applied
 5. L2-normalize query vector
 6. Run `index.search(query_vec, candidate_count * 2)` to get an oversized pool (extra headroom for filtering)
 7. Load metadata for candidate IDs
@@ -167,13 +162,15 @@ Filters are applied after FAISS search and before truncating to `candidate_count
 
 ### Index Loading
 
-Load the index once and keep it in memory for the lifetime of the process (search.py is short-lived). Do not implement lazy loading or caching — the startup cost is acceptable.
+Load the index once and keep it in memory for the lifetime of the process (`search.py` is short-lived). Do not implement lazy loading or caching — the startup cost is acceptable.
 
 ```python
-def load_index(model_dir: str) -> tuple[faiss.Index, list[dict]]:
-    index = faiss.read_index(os.path.join(model_dir, "index.faiss"))
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+
+def load_index() -> tuple[faiss.Index, list[dict]]:
+    index = faiss.read_index(os.path.join(DATA_DIR, "index.faiss"))
     metadata = []
-    with open(os.path.join(model_dir, "metadata.jsonl")) as f:
+    with open(os.path.join(DATA_DIR, "metadata.jsonl")) as f:
         for line in f:
             metadata.append(json.loads(line))
     assert index.ntotal == len(metadata), "Index/metadata row count mismatch"
@@ -185,10 +182,12 @@ def load_index(model_dir: str) -> tuple[faiss.Index, list[dict]]:
 | Step | Target |
 |------|--------|
 | Import + index load | < 800ms |
-| Query embedding (Ollama) | < 50ms |
+| Query embedding (Ollama, warm) | < 50ms |
 | FAISS search (20K skills) | < 5ms |
 | Attribute filter + JSON output | < 5ms |
-| **Total p95** | **< 200ms** (excluding index load) |
+| **Total p95 (warm Ollama)** | **< 200ms** (excluding index load) |
+
+Note: Ollama cold-start (first call after model load) can take 2–5s. This is a one-time cost per Ollama session, not per query.
 
 Index load is one-time startup cost; the agent can treat it as initialization.
 
@@ -201,7 +200,7 @@ faiss-cpu>=1.8
 requests>=2.31
 ```
 
-`sentence-transformers` is optional (Tier 2) and not listed in `requirements.txt` to keep the mandatory install minimal. Print a helpful message if it's not installed and Tier 2 is attempted.
+Ollama is a system dependency, not a Python package. Installation instructions: https://ollama.com/install — then `ollama pull qwen3-embedding:0.6b`.
 
 ---
 
@@ -209,13 +208,11 @@ requests>=2.31
 
 | Metric | Target |
 |--------|--------|
-| Search latency (Tier 1 / Ollama, p95) | < 200ms |
-| Search latency (Tier 2 / MiniLM, p95) | < 500ms |
+| Search latency (Ollama warm, p95) | < 200ms |
 | Expected skill in candidates (Recall@30) | ≥ 90% |
 | `--platform` filter correctly excludes non-matching skills | 100% |
 | `--safety_only` never returns `safety_flag: true` records | 100% |
-| Works with no internet (Tier 1 or 2) | Yes |
-| Works with no Ollama (Tier 2) | Yes |
+| Works with no internet (local Ollama + local index) | Yes |
 | Index download SHA256 verified | Yes |
 
 ---
@@ -251,6 +248,5 @@ requests>=2.31
 ## Open Questions
 
 - Should `update_index.py` verify the download against a GPG signature in addition to SHA256? This would prevent a compromised GitHub Release from being accepted.
-- Ollama cold-start: the first embedding call after Ollama loads the model can take 2–5s. Should `search.py` print a "Loading model..." message if Tier 1 is slow to respond?
 - What should `search.py` do when attribute filters are so restrictive that fewer than `propose_n` candidates pass? Options: return whatever passed (with a count warning in the JSON), or relax filters and annotate results. Leaning toward return-what-passed + warning field.
 - Should platform detection (which platform the user is on) be automatic, defaulting `--platform` to `claude_code`, or always explicit? Auto-default seems better UX.
