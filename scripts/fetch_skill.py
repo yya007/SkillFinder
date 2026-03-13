@@ -101,11 +101,13 @@ def candidate_urls(owner: str, repo: str) -> list[str]:
     Returns
     -------
     list[str]
-        Four URLs, tried in order:
-        1. ``main/SKILL.md``
-        2. ``master/SKILL.md``
-        3. ``main/.claude/SKILL.md``
+        Six URLs in priority order:
+        1. ``main/SKILL.md``           — root, main branch
+        2. ``master/SKILL.md``         — root, master branch
+        3. ``main/.claude/SKILL.md``   — Claude Code convention
         4. ``master/.claude/SKILL.md``
+        5. ``main/.agent/SKILL.md``    — Codex / OpenAI Agents convention
+        6. ``master/.agent/SKILL.md``
     """
     base = f"https://raw.githubusercontent.com/{owner}/{repo}"
     return [
@@ -113,6 +115,8 @@ def candidate_urls(owner: str, repo: str) -> list[str]:
         f"{base}/master/SKILL.md",
         f"{base}/main/.claude/SKILL.md",
         f"{base}/master/.claude/SKILL.md",
+        f"{base}/main/.agent/SKILL.md",
+        f"{base}/master/.agent/SKILL.md",
     ]
 
 
@@ -120,11 +124,42 @@ def candidate_urls(owner: str, repo: str) -> list[str]:
 # Fetching
 # ---------------------------------------------------------------------------
 
+def _discover_skill_md_paths(
+    owner: str, repo: str, timeout: int = 10
+) -> list[str]:
+    """Use the GitHub git-tree API to find SKILL.md at any path in the repo.
+
+    Returns raw-content URLs for any file whose name is ``SKILL.md``
+    (case-insensitive) that isn't already in :func:`candidate_urls`.
+    Returns an empty list on any error (API unavailable, private repo, etc.).
+    """
+    known = set(candidate_urls(owner, repo))
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1",
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return []
+        tree = resp.json().get("tree", [])
+        base = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD"
+        extras = []
+        for item in tree:
+            path = item.get("path", "")
+            if path.upper().endswith("SKILL.MD"):
+                url = f"{base}/{path}"
+                if url not in known:
+                    extras.append(url)
+        return extras
+    except Exception:
+        return []
+
+
 def fetch_skill_md(repo_url: str, timeout: int = 10) -> tuple[str, str]:
     """Fetch SKILL.md content from a GitHub repository.
 
-    Tries each URL from :func:`candidate_urls` in order and returns the first
-    successful (HTTP 200) response.
+    Tries each URL from :func:`candidate_urls` in order, then falls back to
+    the GitHub git-tree API to discover SKILL.md at arbitrary paths.
 
     Parameters
     ----------
@@ -142,7 +177,7 @@ def fetch_skill_md(repo_url: str, timeout: int = 10) -> tuple[str, str]:
     Raises
     ------
     FetchError
-        If all candidate URLs fail (non-200 status or network error).
+        If all candidate URLs and API-discovered URLs fail.
     """
     owner, repo = parse_github_url(repo_url)
     urls = candidate_urls(owner, repo)
@@ -155,8 +190,16 @@ def fetch_skill_md(repo_url: str, timeout: int = 10) -> tuple[str, str]:
             if response.status_code == 200:
                 return response.text, url
         except requests.RequestException:
-            # Network error — treat this URL as failed and try the next one,
-            # but if it's the last URL we still raise FetchError below.
+            pass
+
+    # All well-known paths failed — ask GitHub where SKILL.md actually lives.
+    for url in _discover_skill_md_paths(owner, repo, timeout=timeout):
+        attempted.append(url)
+        try:
+            response = requests.get(url, timeout=timeout)
+            if response.status_code == 200:
+                return response.text, url
+        except requests.RequestException:
             pass
 
     raise FetchError(
