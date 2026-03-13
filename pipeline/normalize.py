@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -134,6 +138,7 @@ def merge_records(records: list[dict]) -> dict:
     skillhub_rank: str | None = None
     skillhub_score: float | None = None
     categories: set[str] = set()
+    triggers: list[str] = []
     description = ""
     name = ""
 
@@ -172,6 +177,11 @@ def merge_records(records: list[dict]) -> dict:
             if topic:
                 categories.add(topic)
 
+        # Triggers — collect from any source, deduplicate while preserving order
+        for trigger in meta.get("triggers", []):
+            if trigger and trigger not in triggers:
+                triggers.append(trigger)
+
         # Safety scan — prefer clawhub
         if src == "clawhub" and meta.get("safety_scan") is not None:
             safety_scan = meta["safety_scan"]
@@ -190,7 +200,7 @@ def merge_records(records: list[dict]) -> dict:
         "description": description,
         "source": sources_seen,
         "categories": sorted(categories),
-        "triggers": [],
+        "triggers": triggers,
         "install_cmd": {},          # populated separately by build_install_cmds
         "quality": {
             "stars": stars,
@@ -336,7 +346,11 @@ def normalize(
                     raise ValueError(
                         f"JSON parse error in {path}:{lineno}: {exc}"
                     ) from exc
-                key = canonical_key(record["repo_url"])
+                repo_url = record.get("repo_url", "")
+                if not repo_url:
+                    logger.warning("Skipping record at %s:%d: missing repo_url", path, lineno)
+                    continue
+                key = canonical_key(repo_url)
                 groups.setdefault(key, []).append(record)
 
     # ----------------------------------------------------------------- merge
