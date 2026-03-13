@@ -90,34 +90,45 @@ def parse_github_url(url: str) -> tuple[str, str]:
 def candidate_urls(owner: str, repo: str) -> list[str]:
     """Return an ordered list of raw-content URLs to try for SKILL.md.
 
+    The repo name is used as the skill directory name, which matches the
+    convention used by all major registries (anthropics/skills, openai/skills,
+    openclaw/clawhub) where each skill lives at ``skills/<repo-name>/SKILL.md``.
+
     Parameters
     ----------
     owner:
-        Repository owner (case-sensitive on GitHub, but caller should pass
-        the value returned by :func:`parse_github_url`).
+        Repository owner.
     repo:
-        Repository name.
+        Repository name (also used as the skill directory name in registries).
 
     Returns
     -------
     list[str]
-        Six URLs in priority order:
-        1. ``main/SKILL.md``           — root, main branch
-        2. ``master/SKILL.md``         — root, master branch
-        3. ``main/.claude/SKILL.md``   — Claude Code convention
-        4. ``master/.claude/SKILL.md``
-        5. ``main/.agent/SKILL.md``    — Codex / OpenAI Agents convention
-        6. ``master/.agent/SKILL.md``
+        URLs tried in priority order:
+
+        1. Root ``SKILL.md`` (most common for single-skill dedicated repos)
+        2. ``skills/{repo}/SKILL.md`` (official registry layout:
+           anthropics/skills, openai/skills, openclaw/clawhub)
+        3. ``.claude/skills/{repo}/SKILL.md`` (Claude Code project-local)
+        4. ``.agents/skills/{repo}/SKILL.md`` (Codex / OpenCode project-local)
+        5. ``.github/skills/{repo}/SKILL.md`` (GitHub Copilot project-local)
+
+        Each pattern is tried on ``main`` then ``master``.
     """
     base = f"https://raw.githubusercontent.com/{owner}/{repo}"
-    return [
-        f"{base}/main/SKILL.md",
-        f"{base}/master/SKILL.md",
-        f"{base}/main/.claude/SKILL.md",
-        f"{base}/master/.claude/SKILL.md",
-        f"{base}/main/.agent/SKILL.md",
-        f"{base}/master/.agent/SKILL.md",
+    skill = repo  # repo name doubles as the skill directory name in registries
+    patterns = [
+        "SKILL.md",
+        f"skills/{skill}/SKILL.md",
+        f".claude/skills/{skill}/SKILL.md",
+        f".agents/skills/{skill}/SKILL.md",
+        f".github/skills/{skill}/SKILL.md",
     ]
+    urls = []
+    for pattern in patterns:
+        urls.append(f"{base}/main/{pattern}")
+        urls.append(f"{base}/master/{pattern}")
+    return urls
 
 
 # ---------------------------------------------------------------------------
