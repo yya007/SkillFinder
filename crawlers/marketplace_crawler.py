@@ -290,9 +290,8 @@ def _discover_marketplace_repos(session, limit: int = 50) -> list[str]:
 
     Uses GitHub Code Search.  Returns a list of "{owner}/{repo}" strings.
     """
-    from crawlers.base import github_get as _gh_get
     try:
-        data = _gh_get(
+        data = github_get(
             session,
             f"{GITHUB_API}/search/code",
             params={

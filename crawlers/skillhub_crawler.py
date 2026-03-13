@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import time
 from typing import Iterator
@@ -266,7 +267,6 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
         class_=lambda c: c and ("overall" in c.lower() or "score" in c.lower()) if c else False
     )
     if score_tag:
-        import re
         score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", score_tag.get_text())
         if score_match:
             try:
@@ -277,7 +277,6 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
     # --- dimension scores ---
     dimension_scores: dict[str, float] = {}
     _DIMENSIONS = ("Practicality", "Clarity", "Automation", "Quality", "Impact")
-    import re as _re
     for dim in _DIMENSIONS:
         # Look for a tag whose text contains the dimension name
         dim_tag = soup.find(
@@ -285,7 +284,7 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
             and tag.name not in ("html", "body", "head", "script", "style")
         )
         if dim_tag:
-            score_match = _re.search(r"\b(\d+(?:\.\d+)?)\b", dim_tag.get_text())
+            score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", dim_tag.get_text())
             if score_match:
                 try:
                     dimension_scores[dim] = float(score_match.group(1))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import logging
+import os
 import re
 import sys
 from typing import Iterator
@@ -283,8 +284,6 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
-    # Allow token via environment variable as well
-    import os
     token = args.token or os.environ.get("GITHUB_TOKEN")
 
     try:

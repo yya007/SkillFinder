@@ -62,7 +62,7 @@ def check_ollama(url: str = OLLAMA_URL) -> None:
     """
     try:
         requests.get(url, timeout=5)
-    except requests.ConnectionError:
+    except (requests.ConnectionError, requests.Timeout):
         raise OllamaNotAvailableError(
             "Ollama is not running or not installed. "
             "Install it at https://ollama.com/install, then run: "
@@ -88,14 +88,20 @@ def embed_query(
             json={"model": model, "input": [full_text]},
             timeout=30,
         )
-    except requests.ConnectionError:
+    except (requests.ConnectionError, requests.Timeout):
         raise OllamaNotAvailableError(
             "Ollama is not running or not installed. "
             "Install it at https://ollama.com/install, then run: "
             "ollama pull qwen3-embedding:0.6b"
         )
     resp.raise_for_status()
-    vec = np.array(resp.json()["embeddings"][0], dtype=np.float32)
+    data = resp.json()
+    embeddings = data.get("embeddings") or data.get("embedding")
+    if not embeddings:
+        raise OllamaNotAvailableError(
+            f"Unexpected Ollama response shape (no 'embeddings' key): {list(data.keys())}"
+        )
+    vec = np.array(embeddings[0], dtype=np.float32)
     # L2-normalize
     norm = np.linalg.norm(vec)
     if norm > 0:

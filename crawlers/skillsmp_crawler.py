@@ -67,6 +67,7 @@ def search_skill_repos(
     query_extra: str = "",
     per_page: int = 30,
     limit: int = None,
+    since: str = None,
 ) -> Iterator[dict]:
     """Search GitHub for repos containing filename:SKILL.md.
 
@@ -92,17 +93,29 @@ def search_skill_repos(
     yielded = 0
     seen_repo_ids: set[int] = set()
 
-    # Build list of date shards from epoch to today
+    # Build list of date shards from epoch to today.
+    # When `since` is provided, start shards from that date to avoid combining
+    # two `pushed:` filters in one query (GitHub AND-s them, causing empty results).
     today = date.today()
+    since_date: date | None = None
+    if since:
+        try:
+            since_date = date.fromisoformat(since)
+        except ValueError:
+            logger.warning("Invalid --since date %r; ignoring.", since)
+
+    shard_start_epoch = since_date if since_date and since_date > _SHARD_EPOCH else _SHARD_EPOCH
+
     shards: list[tuple[date, date]] = []
-    cursor = _SHARD_EPOCH
+    cursor = shard_start_epoch
     while cursor < today:
         end = min(cursor + timedelta(days=_SHARD_WIDTH_DAYS - 1), today)
         shards.append((cursor, end))
         cursor = end + timedelta(days=1)
 
-    # Also add a catch-all shard for very old repos pushed before the epoch
-    shards.insert(0, (date(2008, 1, 1), _SHARD_EPOCH - timedelta(days=1)))
+    # Only include the pre-epoch catch-all shard when not filtering by since date
+    if since_date is None or since_date < _SHARD_EPOCH:
+        shards.insert(0, (date(2008, 1, 1), _SHARD_EPOCH - timedelta(days=1)))
 
     base_query = _BASE_QUERY
     if query_extra:
@@ -323,15 +336,11 @@ def run(
         existing_urls = load_existing_urls(output_path)
         logger.info("Resume mode: skipping %d already-collected repos", len(existing_urls))
 
-    query_extra = ""
-    if since:
-        query_extra = f"pushed:>{since}"
-
     batch: list[dict] = []
     batch_size = 50
     written = 0
 
-    for item in search_skill_repos(session, query_extra=query_extra, per_page=30, limit=limit):
+    for item in search_skill_repos(session, per_page=30, limit=limit, since=since):
         repo = item.get("repository", {})
 
         if not repo:

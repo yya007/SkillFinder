@@ -219,7 +219,7 @@ def extract_github_url(url: str) -> str | None:
         return None
 
     # Must be github.com (with or without www.)
-    host = (parsed.netloc or "").lower().lstrip("www.")
+    host = (parsed.netloc or "").lower().removeprefix("www.")
     if host != _GITHUB_HOST:
         return None
 
