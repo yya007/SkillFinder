@@ -46,23 +46,26 @@ The `SKILL.md` at the repo root is what Claude Code reads to decide when to invo
 - "skill" used in a non-agent context (e.g., "SQL skills", "interview skills")
 
 **Agent behavior:**
-1. Run `search.py` with the user's query (paraphrase if needed to be more descriptive)
-2. Present top 3–5 results in a readable format (not raw JSON)
-3. For each result, show: name, description, quality indicators, install command
-4. Warn prominently if `safety_flag: true`
-5. If `skillhub_rank` is C or lower, note that quality is unverified
-6. Offer to fetch the full `SKILL.md` for any result before installing
-7. If no results (empty array): suggest the user create their own skill; link to SKILL.md format docs
-8. If search fails (index not found): run `update_index.py`, then retry once
+1. Parse user intent: extract the semantic query, desired platform (if stated), and how many results the user wants (default: up to 10)
+2. Translate any platform mentions: "Claude Code skill" → `--platform claude_code`, "Codex skill" → `--platform codex`, "OpenClaw skill" → `--platform openclaw`
+3. Run `search.py "<query>" --propose N [--platform P] [--safety_only]` where N is what the user asked for (or 10 if unspecified)
+4. Read the full candidate pool returned (up to N×3 records); evaluate each against the user's intent — consider description, categories, quality signals, safety, and platform compatibility
+5. Select the best ≤ N candidates based on agent judgment; present them in ranked order (not FAISS order)
+6. For each presented result: show name, description, quality indicators, install command for the relevant platform(s)
+7. Warn prominently if `safety_flag: true` — show warning before the install command
+8. If `skillhub_rank` is C or missing, note that quality is unverified
+9. Offer to fetch the full `SKILL.md` for any result before the user installs
+10. If the candidate pool is empty: suggest the user create their own skill; link to SKILL.md format docs
+11. If search fails (index not found): run `update_index.py`, then retry once
 
 **Result presentation format:**
 
 ```
-Found 3 skills for "deploy kubernetes":
+Found 4 skills for "deploy kubernetes" (reviewed 30 candidates):
 
 1. **kubernetes-deployer** ⭐ 142 | Rating: A | Safety: ✅ clean
    Deploy and manage Kubernetes clusters with automated rollbacks and blue-green deployments.
-   Install: `/plugin install k8s-deployer`
+   Install (Claude Code): `/plugin install k8s-deployer`
    Repo: https://github.com/user/k8s-deployer
 
 2. **helm-chart-manager** ⭐ 89 | Rating: B | Safety: ✅ clean
@@ -132,12 +135,15 @@ The update flow runs `update_index.py` which checks the GitHub release and downl
 
 ### F4 — Cross-Platform Install Commands
 
-For each search result, show the most relevant install command for the detected context:
+For each result, show install commands only for platforms relevant to the user's context:
 
-- Claude Code context (always): `/plugin install <name>`
-- If result has `install_cmd.openclaw`: also show `clawhub install <name>`
+- If the user mentioned a platform (or `--platform` was passed): show only that platform's command
+- Default (no platform specified): show `claude_code` command; mention other platforms if the skill supports them
+- Never dump all platform commands at once — show one primary install command and optionally note others exist
 
-Do not show install commands for platforms the user hasn't mentioned. Avoid overwhelming users with every platform's command.
+Examples:
+- "find a Codex skill for X" → show only `codex` install path
+- "find a skill for X" (no platform) → show Claude Code install; add "(also available on OpenClaw)" if applicable
 
 ---
 
@@ -179,9 +185,27 @@ triggers:
 
 ## Usage
 
-### Search
+### Search (basic)
 ```bash
 python skills/skill-finder/scripts/search.py "deploy kubernetes clusters"
+```
+
+### Search with platform filter
+```bash
+# Claude Code skills only
+python skills/skill-finder/scripts/search.py "deploy kubernetes" --platform claude_code
+
+# Multiple platforms (OR)
+python skills/skill-finder/scripts/search.py "web scraping" --platform claude_code --platform openclaw
+
+# Codex skills, exclude flagged
+python skills/skill-finder/scripts/search.py "git automation" --platform codex --safety_only
+```
+
+### Request more results
+```bash
+# User asks for 15 → returns 45 candidates for agent to review
+python skills/skill-finder/scripts/search.py "terraform" --propose 15
 ```
 
 ### Fetch full SKILL.md for a result
@@ -197,10 +221,13 @@ python skills/skill-finder/scripts/update_index.py
 
 ## How to Present Results
 
-1. Show top 3–5 results with name, description, quality indicators, install command
-2. Warn if `safety_flag: true` — highlight prominently before showing install cmd
-3. Offer to fetch full SKILL.md before the user installs
-4. If no good match: suggest the user create their own skill
+1. Read all candidates returned by search.py (up to propose_n × 3)
+2. Select the best ≤ propose_n based on your own judgment (description relevance, quality, safety, platform fit)
+3. Present your selections ranked by how well they match the user's intent — not by FAISS score order
+4. Warn if `safety_flag: true` — highlight prominently before showing install cmd
+5. Show install command only for the platform(s) relevant to the user's context
+6. Offer to fetch full SKILL.md before the user installs
+7. If no good match in the candidate pool: say so and suggest the user create their own skill
 
 ## Error Handling
 

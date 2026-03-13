@@ -9,12 +9,14 @@
 
 ## Problem
 
-We have a FAISS index. We need the runtime search layer that users and the agent actually call: a script that takes a natural language query, embeds it locally, searches the index, re-ranks results, and returns structured JSON — all in under 200ms and with zero required configuration.
+We have a FAISS index. We need the runtime search layer that users and the agent actually call: a script that takes a natural language query plus optional attribute filters, embeds locally, searches the index, and returns a candidate pool — in raw FAISS score order — for the agent to read and evaluate. Re-ranking is the agent's job, not the script's.
 
 ## Goals
 
 - Sub-200ms search latency on CPU with local Ollama embedding
 - Zero required configuration — auto-detect available embedding tier
+- Attribute-based filtering: platform (claude_code / codex / openclaw), source, safety
+- Return `propose_n × 3` candidates so the agent has enough to make a good selection
 - Structured JSON output suitable for agent consumption
 - `fetch_skill.py` for on-demand full SKILL.md retrieval
 - `update_index.py` for pulling the latest release artifact
@@ -33,18 +35,20 @@ We have a FAISS index. We need the runtime search layer that users and the agent
 
 **CLI:**
 ```
-python scripts/search.py "<query>" [--top_k N] [--min_quality FLOAT] [--json]
+python scripts/search.py "<query>" [--propose N] [--platform PLATFORM [...]] [--source SOURCE] [--safety_only] [--json]
 ```
 
 Flags:
 - `query` (positional, required): natural language search query
-- `--top_k N` (default: 5): number of results to return
-- `--min_quality FLOAT` (default: 0.0): minimum normalized quality score (0–1)
+- `--propose N` (default: 10): how many results the agent should propose to the user; script returns `N × 3` candidates
+- `--platform PLATFORM` (repeatable): filter to skills installable on this platform; values: `claude_code`, `codex`, `openclaw`; multiple flags are OR'd
+- `--source SOURCE` (repeatable): filter to skills from this registry; values: `skillsmp`, `clawhub`, `skillhub`, `marketplace`
+- `--safety_only` (flag): exclude skills where `safety_flag: true`
 - `--json` (default: true): output as JSON array; `--no-json` for human-readable
 
 **Flow:**
 
-1. Parse arguments
+1. Parse arguments; derive `candidate_count = propose_n * 3`
 2. Detect embedding tier (in order):
    a. Run `ollama list`; if `qwen3-embedding` appears → Tier 1, use `data/qwen/`
    b. Try `import sentence_transformers` → Tier 2, use `data/minilm/`
@@ -53,33 +57,40 @@ Flags:
 3. Load FAISS index and metadata from the appropriate `data/{model}/` directory
 4. Embed query with selected model (apply instruction prefix for Qwen3)
 5. L2-normalize query vector
-6. Run `index.search(query_vec, top_k * 3)` to get candidates
+6. Run `index.search(query_vec, candidate_count * 2)` to get an oversized pool (extra headroom for filtering)
 7. Load metadata for candidate IDs
-8. Apply `min_quality` threshold
-9. Re-rank: `score = sim*0.7 + quality_norm*0.2 + recency*0.1`
-10. Return top `top_k` as JSON
+8. Apply attribute filters in order:
+   - `--platform`: keep records where `install_cmd` has at least one matching key
+   - `--source`: keep records where `source` list contains at least one matching value
+   - `--safety_only`: drop records where `safety_flag: true`
+9. Take first `candidate_count` passing records (FAISS score order preserved)
+10. Output as JSON array
 
 **Output JSON schema:**
 ```json
 [
   {
-    "rank": 1,
+    "sim_score": 0.94,
     "name": "docker-compose-manager",
     "description": "...",
-    "score": 0.94,
     "stars": 234,
     "skillhub_rank": "A",
-    "safety": "clean",
+    "skillhub_score": 8.1,
+    "safety_scan": "clean",
     "safety_flag": false,
+    "source": ["skillsmp", "clawhub"],
+    "categories": ["devops", "docker"],
     "repo_url": "https://github.com/...",
-    "install": {
-      "claude_code": "/plugin install ...",
-      "openclaw": "clawhub install ..."
+    "install_cmd": {
+      "claude_code": "/plugin install docker-compose-manager",
+      "openclaw": "clawhub install docker-compose-manager"
     },
     "last_updated": "2026-01-20"
   }
 ]
 ```
+
+`sim_score` is the raw FAISS cosine similarity (0–1). There is no `rank` field — the agent determines rank based on its own reading of the candidates.
 
 ### F2 — Fetch Skill (`scripts/fetch_skill.py`)
 
@@ -127,37 +138,32 @@ Flags:
 
 ## Technical Spec
 
-### Re-ranking
+### Attribute Filtering
 
 ```python
-def normalize_quality(skill: dict) -> float:
-    """Returns 0–1 quality score from multiple signals."""
-    score = 0.0
-    # Stars: log scale, cap at 1000
-    stars = skill.get("quality", {}).get("stars", 0)
-    score += min(math.log1p(stars) / math.log1p(1000), 1.0) * 0.5
-    # SkillHub score: 0–10 scale
-    sh_score = skill.get("quality", {}).get("skillhub_score")
-    if sh_score is not None:
-        score += (sh_score / 10.0) * 0.5
-    elif skill.get("quality", {}).get("skillhub_rank") in ("S", "A"):
-        score += 0.4
-    return min(score, 1.0)
-
-def recency_score(last_updated: str) -> float:
-    """1.0 = updated today, decays to 0.0 at 2 years old."""
-    if not last_updated:
-        return 0.3
-    days = (datetime.date.today() - datetime.date.fromisoformat(last_updated)).days
-    return max(0.0, 1.0 - days / 730)
-
-def rerank(candidates: list[dict], sim_scores: list[float]) -> list[dict]:
-    for skill, sim in zip(candidates, sim_scores):
-        q = normalize_quality(skill)
-        r = recency_score(skill.get("quality", {}).get("last_updated"))
-        skill["_final_score"] = sim * 0.70 + q * 0.20 + r * 0.10
-    return sorted(candidates, key=lambda x: x["_final_score"], reverse=True)
+def apply_filters(
+    candidates: list[dict],
+    platforms: list[str],   # e.g. ["claude_code", "openclaw"]
+    sources: list[str],     # e.g. ["clawhub"]
+    safety_only: bool,
+) -> list[dict]:
+    result = []
+    for skill in candidates:
+        if safety_only and skill.get("safety_flag"):
+            continue
+        if platforms:
+            available = set(skill.get("install_cmd", {}).keys())
+            if not available.intersection(platforms):
+                continue
+        if sources:
+            skill_sources = set(skill.get("source", []))
+            if not skill_sources.intersection(sources):
+                continue
+        result.append(skill)
+    return result
 ```
+
+Filters are applied after FAISS search and before truncating to `candidate_count`. FAISS score order is preserved throughout — no sorting is applied by the script.
 
 ### Index Loading
 
@@ -181,7 +187,7 @@ def load_index(model_dir: str) -> tuple[faiss.Index, list[dict]]:
 | Import + index load | < 800ms |
 | Query embedding (Ollama) | < 50ms |
 | FAISS search (20K skills) | < 5ms |
-| Re-ranking + JSON output | < 5ms |
+| Attribute filter + JSON output | < 5ms |
 | **Total p95** | **< 200ms** (excluding index load) |
 
 Index load is one-time startup cost; the agent can treat it as initialization.
@@ -205,8 +211,9 @@ requests>=2.31
 |--------|--------|
 | Search latency (Tier 1 / Ollama, p95) | < 200ms |
 | Search latency (Tier 2 / MiniLM, p95) | < 500ms |
-| Recall@5 on test suite | ≥ 80% |
-| MRR on test suite | ≥ 0.65 |
+| Expected skill in candidates (Recall@30) | ≥ 90% |
+| `--platform` filter correctly excludes non-matching skills | 100% |
+| `--safety_only` never returns `safety_flag: true` records | 100% |
 | Works with no internet (Tier 1 or 2) | Yes |
 | Works with no Ollama (Tier 2) | Yes |
 | Index download SHA256 verified | Yes |
@@ -222,10 +229,10 @@ requests>=2.31
 
 `tests/test_search_quality.py`:
 - Load `tests/fixtures/test_queries.json` (100 labeled query → expected skill pairs)
-- Run all queries through `search.py`
-- Compute Recall@5 (expected skill appears in top 5) and MRR
-- Print per-query results for debugging misses
-- Exit non-zero if Recall@5 < 0.80
+- Run all queries through `search.py` with `--propose 10` (returns 30 candidates)
+- Compute Recall@30 (expected skill appears anywhere in candidate pool)
+- Print per-query misses for debugging
+- Exit non-zero if Recall@30 < 0.90
 
 `tests/fixtures/test_queries.json` format:
 ```json
@@ -245,3 +252,5 @@ requests>=2.31
 
 - Should `update_index.py` verify the download against a GPG signature in addition to SHA256? This would prevent a compromised GitHub Release from being accepted.
 - Ollama cold-start: the first embedding call after Ollama loads the model can take 2–5s. Should `search.py` print a "Loading model..." message if Tier 1 is slow to respond?
+- What should `search.py` do when attribute filters are so restrictive that fewer than `propose_n` candidates pass? Options: return whatever passed (with a count warning in the JSON), or relax filters and annotate results. Leaning toward return-what-passed + warning field.
+- Should platform detection (which platform the user is on) be automatic, defaulting `--platform` to `claude_code`, or always explicit? Auto-default seems better UX.

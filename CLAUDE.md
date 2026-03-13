@@ -76,8 +76,14 @@ skill-finder/
 pip install -r scripts/requirements.txt
 pip install -r requirements-dev.txt   # adds sentence-transformers, faiss-cpu, pytest
 
-# Run a search against a local index
-python scripts/search.py "deploy kubernetes clusters" --top_k 5
+# Run a search against a local index (returns 30 candidates for agent to review)
+python scripts/search.py "deploy kubernetes clusters" --propose 10
+
+# Filter to Claude Code skills only
+python scripts/search.py "deploy kubernetes clusters" --propose 10 --platform claude_code
+
+# Multiple platform filter (OR), exclude flagged
+python scripts/search.py "web scraping" --platform claude_code --platform openclaw --safety_only
 
 # Fetch a specific skill's SKILL.md
 python scripts/fetch_skill.py --repo https://github.com/user/repo

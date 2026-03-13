@@ -22,7 +22,7 @@ OFFLINE PIPELINE (GitHub Actions, weekly)
 
 RUNTIME (User's machine, inside Claude Code)
 ──────────────────────────────────────────────────────────────
-  User query
+  User query + optional platform filter (claude_code / codex / openclaw)
        ↓
   search.py           Detect available embedding model
        ↓
@@ -30,9 +30,11 @@ RUNTIME (User's machine, inside Claude Code)
        ↓
   FAISS search        Load matching index (qwen/ or minilm/)
        ↓
-  Re-rank             similarity×0.7 + quality×0.2 + recency×0.1
+  Attribute filter    --platform, --source, --safety_only
        ↓
-  JSON results        Returned to Claude Code agent
+  JSON candidates     N×3 results (raw FAISS order) → Claude Code agent
+       ↓
+  Agent selects       Reads all candidates, proposes best ≤ N to user
 
 
 ON-DEMAND (when user wants full skill details)
@@ -73,7 +75,7 @@ Three sequential scripts that transform raw crawler output into a deployable ind
 
 These ship with the skill and run on the user's machine.
 
-- **`search.py`** — the main entry point. Detects available embedding model, loads matching FAISS index, searches, re-ranks, returns JSON.
+- **`search.py`** — the main entry point. Detects available embedding model, loads matching FAISS index, applies attribute filters, returns a candidate pool in FAISS score order for the agent to evaluate.
 - **`fetch_skill.py`** — fetches raw `SKILL.md` from a GitHub repo (tries `main`, `master`, subdirectory patterns).
 - **`update_index.py`** — checks GitHub Releases API for a newer index, downloads and verifies SHA256, extracts into `data/`.
 
@@ -114,19 +116,19 @@ The Qwen3 variants (0.6B vs 8B) produce embeddings in the same space — the 0.6
 
 ---
 
-## Re-ranking Formula
+## Candidate Pool & Agent Selection
 
-After FAISS returns `top_k × 3` candidates:
+`search.py` returns `propose_n × 3` candidates sorted by raw FAISS cosine similarity — no re-ranking. The agent reads the full candidate pool and decides which skills to surface to the user (up to `propose_n`). This keeps the heuristic scoring logic out of the script and lets the agent apply its own judgment based on the full metadata context.
 
-```python
-final_score = (
-    similarity_score * 0.70 +    # FAISS cosine similarity
-    quality_normalized * 0.20 +  # stars + skillhub_score, normalized 0-1
-    recency_score * 0.10         # days since last_updated, decayed
-)
-```
+**Attribute filters** run before returning candidates and reduce the pool prior to agent evaluation:
 
-Then apply `min_quality` threshold filter, take top `top_k`.
+| Flag | Values | Behavior |
+|------|--------|----------|
+| `--platform` | `claude_code`, `codex`, `openclaw` | Keep only skills with a matching key in `install_cmd` |
+| `--source` | `skillsmp`, `clawhub`, `skillhub`, `marketplace` | Keep only skills from that registry |
+| `--safety_only` | flag | Drop skills where `safety_flag: true` |
+
+Multiple `--platform` values are OR'd (e.g., `--platform claude_code --platform openclaw` returns skills installable on either).
 
 ---
 
