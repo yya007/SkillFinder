@@ -1,0 +1,382 @@
+"""
+pipeline/normalize.py — Normalize and deduplicate raw crawler records.
+
+Steps:
+  1. Load all raw JSONL files from crawlers (skillsmp, clawhub, skillhub, marketplace).
+  2. Compute canonical URL keys and group records by them.
+  3. Merge metadata using priority rules.
+  4. Apply quality filter (drop low-quality records without description or signals).
+  5. Apply safety flag based on clawhub safety_scan field.
+  6. Build embedding_text and assign stable SHA-256 IDs.
+  7. Write unified JSONL output; raise QualityGateError if count < min_skills.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+CURATED_SOURCES: set[str] = {"clawhub", "skillhub", "marketplace"}
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class QualityGateError(Exception):
+    """Raised when the normalized output contains fewer skills than min_skills."""
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def canonical_key(repo_url: str) -> str:
+    """Return a stable dedup key for a repo URL.
+
+    Normalisation steps (order matters):
+      1. Raise ValueError / TypeError for empty or None input.
+      2. Lowercase the URL.
+      3. Strip trailing slashes.
+      4. Remove a trailing ``.git`` suffix.
+
+    Examples::
+
+        canonical_key("https://GitHub.COM/User/Repo/")
+        # → "https://github.com/user/repo"
+    """
+    if repo_url is None:
+        raise TypeError("repo_url must not be None")
+    if not repo_url:
+        raise ValueError("repo_url must not be empty")
+
+    return repo_url.lower().rstrip("/").removesuffix(".git")
+
+
+def skill_id(repo_url: str) -> str:
+    """Return a stable 64-character hex SHA-256 identifier for a skill."""
+    return hashlib.sha256(canonical_key(repo_url).encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Embedding text construction
+# ---------------------------------------------------------------------------
+
+def build_embedding_text(skill: dict) -> str:
+    """Build the text passage used for embedding a skill record.
+
+    Format::
+
+        "{name}. {description} Categories: {cat1, cat2}."
+        # and optionally, when triggers are non-empty:
+        " Use when: {t1; t2}."
+
+    Raises:
+        ValueError: if name or description are missing/empty.
+    """
+    name = skill.get("name", "")
+    description = skill.get("description", "")
+
+    if not name:
+        raise ValueError("skill must have a non-empty 'name'")
+    if not description:
+        raise ValueError("skill must have a non-empty 'description'")
+
+    categories = skill.get("categories", [])
+    triggers = skill.get("triggers", [])
+
+    text = f"{name}. {description} Categories: {', '.join(categories)}."
+    if triggers:
+        text += f" Use when: {'; '.join(triggers)}."
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Record merging
+# ---------------------------------------------------------------------------
+
+def merge_records(records: list[dict]) -> dict:
+    """Merge multiple raw records for the same canonical URL into one unified record.
+
+    Priority rules:
+    - ``source``: collect all unique source names as a list.
+    - ``stars``: take the maximum value across records.
+    - ``pushed_at`` / ``last_updated``: take the latest (lexicographic max of ISO dates).
+    - ``safety_scan``: prefer the value from the ``clawhub`` record.
+    - ``skillhub_rank`` / ``skillhub_score``: take from the ``skillhub`` record.
+    - ``categories`` / ``topics``: union of all values across records.
+    - ``description``: prefer the longest non-empty description.
+    - ``name``: take from the first record with a non-empty name.
+    - ``repo_url``: use the canonical form.
+
+    Raises:
+        ValueError: if records is empty.
+    """
+    if not records:
+        raise ValueError("records must not be empty")
+
+    # Use canonical URL from the first record (all should share the same key)
+    canon_url = canonical_key(records[0]["repo_url"])
+
+    # Collect sources (preserve insertion order, deduplicate)
+    sources_seen: list[str] = []
+    sources_set: set[str] = set()
+
+    stars = 0
+    last_updated: str | None = None
+    safety_scan: str | None = None
+    skillhub_rank: str | None = None
+    skillhub_score: float | None = None
+    categories: set[str] = set()
+    description = ""
+    name = ""
+
+    for rec in records:
+        src = rec.get("source", "")
+        if src and src not in sources_set:
+            sources_seen.append(src)
+            sources_set.add(src)
+
+        if not name:
+            name = rec.get("name", "")
+
+        # Prefer longest non-empty description
+        rec_desc = rec.get("description", "") or ""
+        if len(rec_desc) > len(description):
+            description = rec_desc
+
+        meta: dict[str, Any] = rec.get("raw_metadata", {}) or {}
+
+        # Stars — take maximum
+        rec_stars = meta.get("stars")
+        if rec_stars is not None and rec_stars > stars:
+            stars = rec_stars
+
+        # Last updated — take latest ISO date string
+        rec_pushed = meta.get("pushed_at")
+        if rec_pushed:
+            if last_updated is None or rec_pushed > last_updated:
+                last_updated = rec_pushed
+
+        # Categories and topics — union
+        for cat in meta.get("categories", []):
+            if cat:
+                categories.add(cat)
+        for topic in meta.get("topics", []):
+            if topic:
+                categories.add(topic)
+
+        # Safety scan — prefer clawhub
+        if src == "clawhub" and meta.get("safety_scan") is not None:
+            safety_scan = meta["safety_scan"]
+
+        # SkillHub rank and score
+        if src == "skillhub":
+            if meta.get("rank") is not None:
+                skillhub_rank = meta["rank"]
+            if meta.get("overall_score") is not None:
+                skillhub_score = meta["overall_score"]
+
+    return {
+        "id": skill_id(canon_url),
+        "repo_url": canon_url,
+        "name": name,
+        "description": description,
+        "source": sources_seen,
+        "categories": sorted(categories),
+        "triggers": [],
+        "install_cmd": {},          # populated separately by build_install_cmds
+        "quality": {
+            "stars": stars,
+            "skillhub_rank": skillhub_rank,
+            "skillhub_score": skillhub_score,
+            "safety_scan": safety_scan,
+            "safety_flag": False,
+            "last_updated": last_updated,
+        },
+        "embedding_text": "",       # populated after merge by build_embedding_text
+    }
+
+
+# ---------------------------------------------------------------------------
+# Install command generation
+# ---------------------------------------------------------------------------
+
+def build_install_cmds(merged: dict) -> dict[str, str]:
+    """Generate platform → install command mapping from merged source list.
+
+    Rules (later sources can overwrite earlier for the same platform key):
+    - ``skillsmp``   → ``claude_code: /plugin install {name}``
+    - ``clawhub``    → ``claude_code: /plugin install {name}``,
+                        ``openclaw: clawhub install {name}``
+    - ``marketplace`` → ``claude_code: /skill install {name}``
+    - ``skillhub``   → (metadata only — no install command)
+    """
+    name = merged["name"]
+    sources: list[str] = merged.get("source", [])
+    cmds: dict[str, str] = {}
+
+    for src in sources:
+        if src == "skillsmp":
+            cmds["claude_code"] = f"/plugin install {name}"
+        elif src == "clawhub":
+            cmds["claude_code"] = f"/plugin install {name}"
+            cmds["openclaw"] = f"clawhub install {name}"
+        elif src == "marketplace":
+            cmds["claude_code"] = f"/skill install {name}"
+        # skillhub: no install command
+
+    return cmds
+
+
+# ---------------------------------------------------------------------------
+# Quality filter
+# ---------------------------------------------------------------------------
+
+def passes_quality_filter(skill: dict) -> bool:
+    """Return True if the merged skill record passes the quality bar.
+
+    A skill passes if ANY of the following conditions holds:
+    1. ``quality.stars`` >= 2
+    2. At least one source is in CURATED_SOURCES
+    3. ``quality.skillhub_rank`` is "A" or "S"
+
+    AND the record must have a non-empty description; without one it always
+    fails regardless of other signals.
+    """
+    description = skill.get("description", "")
+    if not description:
+        return False
+
+    quality = skill.get("quality", {})
+    stars = quality.get("stars", 0) or 0
+    skillhub_rank = quality.get("skillhub_rank")
+    sources: list[str] = skill.get("source", [])
+
+    if stars >= 2:
+        return True
+    if any(src in CURATED_SOURCES for src in sources):
+        return True
+    if skillhub_rank in {"A", "S"}:
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Safety flag
+# ---------------------------------------------------------------------------
+
+def apply_safety_flag(skill: dict) -> dict:
+    """Return a copy of skill with ``quality.safety_flag`` set correctly.
+
+    The flag is set to True only when the skill has ``clawhub`` as a source
+    AND ``quality.safety_scan`` contains the word "warning" (case-insensitive).
+
+    Does NOT mutate the input dict.
+    """
+    result = {**skill, "quality": {**skill.get("quality", {})}}
+    sources: list[str] = result.get("source", [])
+
+    if "clawhub" in sources:
+        safety_scan = result["quality"].get("safety_scan", "") or ""
+        result["quality"]["safety_flag"] = "warning" in safety_scan.lower()
+    else:
+        result["quality"]["safety_flag"] = False
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
+def normalize(
+    raw_paths: list[str],
+    output_path: str,
+    min_skills: int = 1,
+) -> int:
+    """Run the full normalization pipeline.
+
+    Args:
+        raw_paths:   Paths to raw crawler JSONL files.
+        output_path: Where to write the unified JSONL output.
+        min_skills:  Minimum number of output records; raise QualityGateError
+                     if the count is below this threshold.
+
+    Returns:
+        Number of records written to output_path.
+
+    Raises:
+        FileNotFoundError: if any path in raw_paths does not exist.
+        QualityGateError:  if the output record count is below min_skills.
+    """
+    # ------------------------------------------------------------------ load
+    # key: canonical URL  →  value: list of raw records sharing that URL
+    groups: dict[str, list[dict]] = {}
+
+    for path in raw_paths:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Input file not found: {path}")
+        with p.open(encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"JSON parse error in {path}:{lineno}: {exc}"
+                    ) from exc
+                key = canonical_key(record["repo_url"])
+                groups.setdefault(key, []).append(record)
+
+    # ----------------------------------------------------------------- merge
+    output_records: list[dict] = []
+
+    for _key, recs in groups.items():
+        merged = merge_records(recs)
+
+        # Quality gate: drop records that don't meet the bar
+        if not passes_quality_filter(merged):
+            continue
+
+        # Build install commands
+        merged["install_cmd"] = build_install_cmds(merged)
+
+        # Build embedding text (skip records that still lack name/description
+        # after merging — shouldn't happen after quality filter, but be safe)
+        try:
+            merged["embedding_text"] = build_embedding_text(merged)
+        except ValueError:
+            continue
+
+        # Apply safety flag (returns a shallow copy; reassign)
+        merged = apply_safety_flag(merged)
+
+        output_records.append(merged)
+
+    # --------------------------------------------------------------- quality gate
+    count = len(output_records)
+    if count < min_skills:
+        raise QualityGateError(
+            f"Quality gate failed: produced {count} skills, "
+            f"but min_skills={min_skills} required."
+        )
+
+    # ----------------------------------------------------------------- write
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as fh:
+        for record in output_records:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return count
