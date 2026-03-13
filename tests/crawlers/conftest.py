@@ -16,6 +16,9 @@ def mock_session():
     return MagicMock()
 
 
+_REPO_ID_COUNTER = 1
+
+
 def make_github_repo(
     full_name="user/test-skill",
     stars=10,
@@ -23,10 +26,16 @@ def make_github_repo(
     topics=None,
     description="A test skill.",
     default_branch="main",
+    repo_id=None,
 ):
     """Build a fake GitHub repo API response dict."""
+    global _REPO_ID_COUNTER
+    if repo_id is None:
+        repo_id = _REPO_ID_COUNTER
+        _REPO_ID_COUNTER += 1
     owner, repo = full_name.split("/")
     return {
+        "id": repo_id,
         "full_name": full_name,
         "html_url": f"https://github.com/{full_name}",
         "name": repo,

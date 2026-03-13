@@ -133,10 +133,11 @@ def embed_all(
         logger.info("Embedded %d/%d records", end, total)
 
         # Write checkpoint after every batch (if dir provided).
+        # Save only the current batch's vectors; a resume routine can
+        # concatenate checkpoint files in order.  Avoids O(N²) re-vstack.
         if ckpt_path is not None:
-            partial = np.vstack(all_vecs)
             ckpt_file = ckpt_path / f"embeddings_checkpoint_{batch_idx + 1}.npy"
-            np.save(str(ckpt_file), partial)
+            np.save(str(ckpt_file), vecs)
             logger.info("Saved checkpoint: %s", ckpt_file)
 
     return np.vstack(all_vecs) if all_vecs else np.empty((0, DIM), dtype=np.float32)

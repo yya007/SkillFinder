@@ -386,6 +386,12 @@ def run(
             seen_paths.add(dedup_key)
 
             record = build_raw_record(entry)
+
+            # Resume: skip records whose repo_url was already written
+            if resume and record["repo_url"] in existing_urls:
+                logger.debug("Skipping already-collected skill: %s", record["repo_url"])
+                continue
+
             batch.append(record)
 
             if len(batch) >= batch_size:

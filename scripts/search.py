@@ -61,8 +61,9 @@ def check_ollama(url: str = OLLAMA_URL) -> None:
     GETs the base URL. Raises OllamaNotAvailableError if the connection fails.
     """
     try:
-        requests.get(url, timeout=5)
-    except (requests.ConnectionError, requests.Timeout):
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+    except (requests.ConnectionError, requests.Timeout, requests.HTTPError):
         raise OllamaNotAvailableError(
             "Ollama is not running or not installed. "
             "Install it at https://ollama.com/install, then run: "
