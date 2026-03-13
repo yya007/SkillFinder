@@ -343,10 +343,28 @@ def run(
     """
     session = make_session(token=token)
 
-    existing_urls: set[str] = set()
+    # For marketplace, dedup by (parent_repo, path) — multiple skills in the same
+    # registry repo share the same repo_url, so repo_url alone is too coarse.
+    seen_paths: set[str] = set()
     if resume:
-        existing_urls = load_existing_urls(output_path)
-        logger.info("Resume mode: skipping %d already-collected skills", len(existing_urls))
+        try:
+            from pathlib import Path as _Path
+            import json as _json
+            existing_text = _Path(output_path).read_text(encoding="utf-8")
+            for line in existing_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                    meta = rec.get("raw_metadata", {})
+                    key = f"{meta.get('parent_repo', '')}#{meta.get('path', '')}"
+                    seen_paths.add(key)
+                except Exception:
+                    pass
+        except FileNotFoundError:
+            pass
+        logger.info("Resume mode: %d skills already in output", len(seen_paths))
 
     # Build combined list: known targets + discovered extras (only with auth to avoid rate limits)
     all_repos = list(TARGET_REPOS)
@@ -355,10 +373,6 @@ def run(
         for repo in discovered:
             if repo not in all_repos:
                 all_repos.append(repo)
-
-    # For marketplace, dedup by (parent_repo_url, path) since multiple skills
-    # from the same registry repo share the same repo_url.
-    seen_paths: set[str] = set()
     batch: list[dict] = []
     batch_size = 20
     written = 0
@@ -386,12 +400,6 @@ def run(
             seen_paths.add(dedup_key)
 
             record = build_raw_record(entry)
-
-            # Resume: skip records whose repo_url was already written
-            if resume and record["repo_url"] in existing_urls:
-                logger.debug("Skipping already-collected skill: %s", record["repo_url"])
-                continue
-
             batch.append(record)
 
             if len(batch) >= batch_size:

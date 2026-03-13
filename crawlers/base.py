@@ -122,17 +122,25 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
         # Proactive rate-limit check on every response
         _maybe_wait_for_reset(resp)
 
+        # Rate-limit responses (429/403 with quota exhausted): sleep until reset
+        # and retry immediately without consuming a backoff attempt slot.
+        while resp.status_code in (429, 403):
+            remaining = int(resp.headers.get("X-RateLimit-Remaining", "1"))
+            if remaining == 0 or resp.status_code == 429:
+                _wait_for_reset(resp, label=url)
+                try:
+                    resp = session.get(url, params=params, timeout=timeout)
+                except requests.RequestException as exc:
+                    last_exc = exc
+                    break
+            else:
+                break
+
         if resp.status_code == 200:
             try:
                 return resp.json()
             except ValueError as exc:
                 raise RuntimeError(f"Invalid JSON from {url}: {exc}") from exc
-
-        if resp.status_code in (429, 403):
-            remaining = int(resp.headers.get("X-RateLimit-Remaining", "1"))
-            if remaining == 0 or resp.status_code == 429:
-                _wait_for_reset(resp, label=url)
-                continue  # don't count this as a backoff attempt
 
         # Any other non-200: log and retry with backoff
         logger.warning("HTTP %s from %s", resp.status_code, url)
