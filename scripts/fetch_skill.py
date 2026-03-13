@@ -104,15 +104,15 @@ def candidate_urls(owner: str, repo: str) -> list[str]:
         Four URLs, tried in order:
         1. ``main/SKILL.md``
         2. ``master/SKILL.md``
-        3. ``main/SKILL.md`` (alternate capitalisation handled by server)
-        4. ``master/SKILL.md`` (alternate capitalisation handled by server)
+        3. ``main/.claude/SKILL.md``
+        4. ``master/.claude/SKILL.md``
     """
     base = f"https://raw.githubusercontent.com/{owner}/{repo}"
     return [
         f"{base}/main/SKILL.md",
         f"{base}/master/SKILL.md",
-        f"{base}/main/SKILL.md",
-        f"{base}/master/SKILL.md",
+        f"{base}/main/.claude/SKILL.md",
+        f"{base}/master/.claude/SKILL.md",
     ]
 
 
