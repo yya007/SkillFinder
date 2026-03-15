@@ -1,0 +1,251 @@
+name: Update Skill Index
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force full rebuild (skip incremental optimisation)'
+        type: boolean
+        default: false
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write   # needed to publish GitHub Releases
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-ci.txt
+
+      # ── Phase 1: Crawl all registries in parallel ─────────────────────────
+      - name: Crawl all sources (parallel)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data/raw
+          python -m crawlers.skillsmp_crawler   -o data/raw/skillsmp.jsonl   &
+          python -m crawlers.clawhub_crawler    -o data/raw/clawhub.jsonl    &
+          python -m crawlers.skillhub_crawler   -o data/raw/skillhub.jsonl   &
+          python -m crawlers.marketplace_crawler -o data/raw/marketplace.jsonl &
+          wait
+
+      # ── Phase 2: Normalize and deduplicate ────────────────────────────────
+      - name: Normalize and deduplicate
+        run: |
+          python pipeline/normalize.py \
+            data/raw/skillsmp.jsonl data/raw/clawhub.jsonl \
+            data/raw/skillhub.jsonl data/raw/marketplace.jsonl \
+            -o data/unified_skills.jsonl
+
+      # ── Phase 3: Pre-embed quality gate ───────────────────────────────────
+      - name: Quality gate — minimum skill count (≥ 8,000)
+        run: |
+          COUNT=$(wc -l < data/unified_skills.jsonl)
+          echo "Normalized skill count: $COUNT"
+          if [ "$COUNT" -lt 8000 ]; then
+            echo "::error::Quality gate failed: only $COUNT skills (need ≥ 8000)"
+            exit 1
+          fi
+          echo "SKILL_COUNT=$COUNT" >> "$GITHUB_ENV"
+
+      # ── Phase 4: Decide rebuild strategy ──────────────────────────────────
+      # Incremental: delta < 20% AND force_rebuild is false
+      # Full rebuild: delta ≥ 20%, no previous release, or force_rebuild=true
+      - name: Decide rebuild strategy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_COUNT="${{ env.SKILL_COUNT }}"
+
+          # Fetch the latest release body. If no release exists yet, gh exits non-zero.
+          if PREV_BODY=$(gh release view \
+              --repo "${{ github.repository }}" \
+              --json body -q '.body' 2>/dev/null); then
+            HAS_PREV=true
+            # Parse **Skills indexed:** from the structured release body.
+            # If the field is present but unparseable, fail loudly — this indicates
+            # a release body format change rather than a first-run scenario.
+            PREV_COUNT=$(echo "$PREV_BODY" \
+              | grep -oP '(?<=\*\*Skills indexed:\*\* )[0-9,]+' \
+              | tr -d ',' | head -1)
+            if [ -z "$PREV_COUNT" ]; then
+              echo "::error::A previous release exists but the skill count could not be parsed from its body."
+              echo "::error::Expected a line matching '**Skills indexed:** <number>'."
+              echo "::error::If the release body format changed, update the grep pattern."
+              echo "::error::To bypass, trigger this workflow with force_rebuild=true."
+              exit 1
+            fi
+          else
+            HAS_PREV=false
+            PREV_COUNT=0
+            echo "No previous release found — will perform full rebuild."
+          fi
+
+          python3 - <<'PYEOF'
+          import os
+          prev = int("$PREV_COUNT")
+          new  = int("$NEW_COUNT")
+          force = "${{ inputs.force_rebuild }}" == "true"
+
+          if prev == 0 or force:
+              incremental = False
+              reason = "no_previous_release" if prev == 0 else "force_rebuild_requested"
+          else:
+              delta = abs(new - prev) / prev
+              incremental = delta < 0.20
+              reason = f"delta_{delta*100:.1f}pct_lt_20pct" if incremental \
+                       else f"delta_{delta*100:.1f}pct_gte_20pct"
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"INCREMENTAL={'true' if incremental else 'false'}\n")
+              f.write(f"REBUILD_REASON={reason}\n")
+              f.write(f"PREV_COUNT={prev}\n")
+          PYEOF
+
+          echo "Strategy: INCREMENTAL=${INCREMENTAL}, REBUILD_REASON=${REBUILD_REASON}"
+          echo "Previous count: ${PREV_COUNT} → New count: ${NEW_COUNT}"
+
+      # ── Phase 5: Install Ollama (shared by both paths) ────────────────────
+      - name: Cache Ollama model
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-embedding-0.6b
+
+      - name: Install Ollama and pull embedding model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          echo "Waiting for Ollama to become ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama ready after ${i}s."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Ollama did not become ready within 30 seconds."
+              exit 1
+            fi
+            sleep 1
+          done
+          ollama pull qwen3-embedding:0.6b
+
+      # ── Phase 6a: Incremental path ────────────────────────────────────────
+      - name: Download previous index (incremental only)
+        if: env.INCREMENTAL == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/prev-index
+          gh release download \
+            --pattern "*.tar.gz" \
+            --dir /tmp/prev-index \
+            --repo "${{ github.repository }}"
+          tar -xzf /tmp/prev-index/*.tar.gz -C data/
+          echo "Previous index extracted: $(wc -l < data/metadata.jsonl) skills"
+
+      - name: Incremental embed and append
+        if: env.INCREMENTAL == 'true'
+        run: |
+          python pipeline/incremental_update.py \
+            --new-skills data/unified_skills.jsonl \
+            --index      data/index.faiss \
+            --metadata   data/metadata.jsonl \
+            --version    data/version.txt
+
+      # ── Phase 6b: Full rebuild path ───────────────────────────────────────
+      - name: Full embed (all skills via Ollama)
+        if: env.INCREMENTAL == 'false'
+        run: |
+          python pipeline/embed.py \
+            --input              data/unified_skills.jsonl \
+            --output-embeddings  data/embeddings.npy \
+            --output-ordered     data/unified_skills_ordered.jsonl
+
+      - name: Build FAISS index (full rebuild)
+        if: env.INCREMENTAL == 'false'
+        run: |
+          python pipeline/build_index.py \
+            --embeddings  data/embeddings.npy \
+            --skills      data/unified_skills_ordered.jsonl \
+            --out-index   data/index.faiss \
+            --out-meta    data/metadata.jsonl \
+            --out-version data/version.txt \
+            --embed-model qwen3-embedding:0.6b
+
+      # ── Phase 7: Post-build quality gate ──────────────────────────────────
+      - name: Quality gate — count regression check (≤ 20% drop)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python pipeline/check_regression.py
+
+      # ── Phase 8: Package ──────────────────────────────────────────────────
+      - name: Package artifact
+        run: |
+          DATE=$(date +%Y%m%d)
+          ARTIFACT="skill-finder-index-${DATE}.tar.gz"
+          tar -czf "$ARTIFACT" \
+            data/index.faiss data/metadata.jsonl data/version.txt
+          SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
+          FINAL_COUNT=$(wc -l < data/metadata.jsonl)
+          {
+            echo "ARTIFACT=$ARTIFACT"
+            echo "SHA256=$SHA"
+            echo "DATE=$DATE"
+            echo "FINAL_COUNT=$FINAL_COUNT"
+          } >> "$GITHUB_ENV"
+
+      # ── Phase 9: Publish GitHub Release ───────────────────────────────────
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@b25b93d384199fc0fc8c2e126b2d937a0cbeb2ae  # v2
+        with:
+          tag_name: index-${{ env.DATE }}
+          name: Skill Index ${{ env.DATE }}
+          body: |
+            ## Skill Index ${{ env.DATE }}
+
+            **Build type:** ${{ env.INCREMENTAL == 'true' && 'Incremental (append-only)' || 'Full rebuild' }} — ${{ env.REBUILD_REASON }}
+            **Skills indexed:** ${{ env.FINAL_COUNT }}
+            **Previous count:** ${{ env.PREV_COUNT }}
+            **SHA256:** `${{ env.SHA256 }}`
+
+            ### Install / Update
+
+            ```bash
+            python scripts/update_index.py
+            ```
+          files: ${{ env.ARTIFACT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Phase 10: Prune old releases (keep latest 3) ──────────────────────
+      - name: Delete old releases (keep latest 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # List all index-* releases sorted newest first, skip the 3 we want to keep
+          gh release list \
+            --repo "${{ github.repository }}" \
+            --limit 100 \
+            --json tagName \
+            --jq '.[].tagName' \
+          | grep '^index-' \
+          | sort -r \
+          | tail -n +4 \
+          | while read -r tag; do
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" \
+                --repo "${{ github.repository }}" \
+                --yes \
+                --cleanup-tag
+            done
