@@ -1,9 +1,35 @@
+# Python
 __pycache__/
-*.pyc
-data/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Pipeline intermediates — not needed at runtime
+data/raw/
+data/embeddings.npy
+data/unified_skills.jsonl
+data/unified_skills_ordered.jsonl
+data/filter_cache.jsonl
 data/trial/
-!data/filter_cache.jsonl
+
+# Local logs
+logs/
+
+# Test / coverage artefacts
 .pytest_cache/
 .coverage
+htmlcov/
+
+# Claude Code local settings (may contain tokens / allowlists)
 .claude/
-logs/
