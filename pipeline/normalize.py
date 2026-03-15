@@ -284,6 +284,8 @@ def build_install_cmds(merged: dict) -> dict[str, str]:
                 cmds["claude_code"] = f"/skill install {name}"
             else:
                 cmds["claude_code"] = f"/plugin install {name}"
+        elif src == "topic":
+            cmds["claude_code"] = f"/plugin install {name}"
         # skillhub: no install command
 
     if "codex" in merged.get("platforms", []):

@@ -433,6 +433,113 @@ class TestRunClawhub:
 
 
 # ---------------------------------------------------------------------------
+# TestDiscoverOpenclawRepos
+# ---------------------------------------------------------------------------
+
+class TestDiscoverOpenclawRepos:
+    """Unit tests for _discover_openclaw_repos()."""
+
+    def test_returns_list_of_full_names(self):
+        from crawlers.clawhub_crawler import _discover_openclaw_repos
+
+        page1 = {"items": [{"full_name": "openclaw/skill-a"}, {"full_name": "openclaw/skill-b"}]}
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get, \
+             patch("crawlers.clawhub_crawler.make_session") as mock_session:
+            mock_get.return_value = page1
+            result = _discover_openclaw_repos(mock_session.return_value, limit=10)
+
+        assert "openclaw/skill-a" in result
+        assert "openclaw/skill-b" in result
+
+    def test_deduplicates_across_queries(self):
+        from crawlers.clawhub_crawler import _discover_openclaw_repos
+
+        # Same repo appears in two different query results
+        both_return = {"items": [{"full_name": "openclaw/shared-skill"}]}
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get, \
+             patch("crawlers.clawhub_crawler.make_session") as mock_session:
+            mock_get.return_value = both_return
+            result = _discover_openclaw_repos(mock_session.return_value, limit=100)
+
+        assert result.count("openclaw/shared-skill") == 1
+
+    def test_respects_limit(self):
+        from crawlers.clawhub_crawler import _discover_openclaw_repos
+
+        items_100 = {"items": [{"full_name": f"user/skill-{i}"} for i in range(100)]}
+        items_empty = {"items": []}
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get, \
+             patch("crawlers.clawhub_crawler.make_session") as mock_session:
+            mock_get.side_effect = [items_100, items_empty] * 10
+            result = _discover_openclaw_repos(mock_session.return_value, limit=5)
+
+        assert len(result) <= 5
+
+    def test_handles_api_error_gracefully(self):
+        from crawlers.clawhub_crawler import _discover_openclaw_repos
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get, \
+             patch("crawlers.clawhub_crawler.make_session") as mock_session:
+            mock_get.side_effect = RuntimeError("rate limited")
+            result = _discover_openclaw_repos(mock_session.return_value, limit=10)
+
+        assert result == []
+
+    def test_run_includes_discovered_repos_not_in_awesome_list(self, tmp_path):
+        """Repos found via org search that are not in the awesome list are crawled."""
+        from crawlers.clawhub_crawler import run
+
+        discovered_skill_md = "---\nname: discovered-skill\ndescription: Found via org search.\n---\n"
+        meta = {"stargazers_count": 10, "pushed_at": "2026-01-01", "default_branch": "main"}
+
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md, \
+             patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
+            mock_fetch.return_value = "# Awesome List\n\nNo skills.\n"
+            mock_meta.return_value = meta
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = discovered_skill_md
+            mock_discover.return_value = ["openclaw/discovered-skill"]
+
+            out = str(tmp_path / "out.jsonl")
+            # token required: discovery is skipped when token is None
+            count = run(out, token="fake-token")
+
+        assert count == 1
+        record = json.loads(Path(out).read_text().strip())
+        assert record["name"] == "discovered-skill"
+        assert record["source"] == "clawhub"
+
+    def test_run_does_not_double_count_awesome_list_repos(self, tmp_path):
+        """Repos already crawled via the awesome list are not re-crawled via discovery."""
+        from crawlers.clawhub_crawler import run
+
+        meta = {"stargazers_count": 5, "pushed_at": "2026-01-01", "default_branch": "main"}
+
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md, \
+             patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
+            mock_fetch.return_value = SAMPLE_AWESOME_README  # k8s-deployer, docker-manager, test-runner
+            mock_meta.return_value = meta
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = None
+            mock_discover.return_value = ["user/k8s-deployer", "user/docker-manager"]
+
+            out = str(tmp_path / "out.jsonl")
+            count = run(out, token="fake-token")
+
+        # Only the 3 unique skills from the awesome list — no duplicates from discovery
+        assert count == 3
+
+
+# ---------------------------------------------------------------------------
 # TestClawhubCrawlerNetwork — real network calls
 # ---------------------------------------------------------------------------
 
