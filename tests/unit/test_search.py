@@ -240,6 +240,75 @@ class TestApplyFilters:
         result = apply_filters(skills_for_search, platforms=["nonexistent_platform"], sources=[])
         assert result == []
 
+    def test_platform_filter_uses_platforms_field_not_install_cmd(self):
+        """Skills with platforms=["claude_code"] but install_cmd={} must still match."""
+        skillhub_skill = {
+            "name": "skillhub-tool",
+            "description": "A SkillHub metadata-only skill.",
+            "source": ["skillhub"],
+            "platforms": ["claude_code"],
+            "install_cmd": {},  # SkillHub records always have empty install_cmd
+            "quality": {"stars": 50},
+        }
+        result = apply_filters([skillhub_skill], platforms=["claude_code"], sources=[])
+        assert len(result) == 1, "Skills with platforms field but no install_cmd should match"
+
+    def test_min_stars_zero_returns_all(self, skills_for_search):
+        result = apply_filters(skills_for_search, platforms=[], sources=[], min_stars=0)
+        assert len(result) == len(skills_for_search)
+
+    def test_min_stars_at_threshold_returns_all(self, skills_for_search):
+        # All fixture skills have stars=10 by default
+        result = apply_filters(skills_for_search, platforms=[], sources=[], min_stars=10)
+        assert len(result) == len(skills_for_search)
+
+    def test_min_stars_above_threshold_excludes_all(self, skills_for_search):
+        result = apply_filters(skills_for_search, platforms=[], sources=[], min_stars=11)
+        assert result == []
+
+    def test_min_stars_partial_filter(self):
+        high_star = {
+            "name": "popular",
+            "platforms": [],
+            "source": [],
+            "quality": {"stars": 100},
+        }
+        low_star = {
+            "name": "obscure",
+            "platforms": [],
+            "source": [],
+            "quality": {"stars": 5},
+        }
+        result = apply_filters([high_star, low_star], platforms=[], sources=[], min_stars=50)
+        assert len(result) == 1
+        assert result[0]["name"] == "popular"
+
+    def test_min_stars_combined_with_platform(self, skills_for_search):
+        # claude_code skills: k8s-deployer (stars=10), flagged-tool (stars=10)
+        result = apply_filters(
+            skills_for_search, platforms=["claude_code"], sources=[], min_stars=10
+        )
+        assert all("claude_code" in s.get("platforms", []) for s in result)
+        assert all(s.get("quality", {}).get("stars", 0) >= 10 for s in result)
+
+    def test_safety_only_filter_excludes_unscanned(self):
+        safe = {"name": "safe", "platforms": [], "source": [], "quality": {}, "safety_scan": True}
+        unsafe = {"name": "unsafe", "platforms": [], "source": [], "quality": {}}
+        result = apply_filters([safe, unsafe], platforms=[], sources=[], safety_only=True)
+        assert len(result) == 1
+        assert result[0]["name"] == "safe"
+
+    def test_safety_only_passes_scanned_skills(self):
+        safe = {"name": "safe", "platforms": [], "source": [], "quality": {}, "safety_scan": True}
+        result = apply_filters([safe], platforms=[], sources=[], safety_only=True)
+        assert len(result) == 1
+
+    def test_safety_only_false_returns_all(self):
+        safe = {"name": "safe", "platforms": [], "source": [], "quality": {}, "safety_scan": True}
+        unsafe = {"name": "unsafe", "platforms": [], "source": [], "quality": {}}
+        result = apply_filters([safe, unsafe], platforms=[], sources=[], safety_only=False)
+        assert len(result) == 2
+
 
 # ---------------------------------------------------------------------------
 # search (end-to-end with tiny index)
@@ -366,6 +435,25 @@ class TestFormatResults:
         results = [{"sim_score": 0.9, **skills_for_search[0]}]
         output = format_results(results, as_json=False)
         assert skills_for_search[0]["name"] in output
+
+    def test_human_readable_output_no_score(self, skills_for_search):
+        results = [{"sim_score": 0.9, **skills_for_search[0]}]
+        output = format_results(results, as_json=False)
+        assert "(score:" not in output
+
+    def test_human_readable_shows_stars(self):
+        skill = {
+            "sim_score": 0.9,
+            "name": "popular-skill",
+            "description": "Does something useful.",
+            "repo_url": "https://github.com/user/popular-skill",
+            "platforms": ["claude_code"],
+            "install_cmd": {"claude_code": "/plugin install popular-skill"},
+            "quality": {"stars": 1234},
+        }
+        output = format_results([skill], as_json=False)
+        assert "⭐" in output
+        assert "1,234" in output
 
     def test_empty_results_returns_valid_output(self):
         json_out = format_results([], as_json=True)

@@ -1,9 +1,30 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Data directory (large binary files, downloaded at runtime)
 data/
-data/trial/
-!data/filter_cache.jsonl
+
+# Local logs
+logs/
+
+# Test / coverage artefacts
 .pytest_cache/
 .coverage
+htmlcov/
+
+# Claude Code local settings (may contain tokens / allowlists)
 .claude/
-logs/
