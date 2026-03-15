@@ -4,7 +4,7 @@
 
 SkillFinder searches 10,000+ curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
 
-**Supported platforms:** Claude Code · OpenClaw · Codex
+**Indexes skills for:** Claude Code · OpenClaw · Codex
 
 ---
 
@@ -17,15 +17,17 @@ You: find a skill for deploying kubernetes clusters
 
 Claude: Found 3 skills for "deploying kubernetes clusters":
 
-1. **k8s-deployer** ⭐ 142 stars — `clawhub`
+1. **k8s-deployer** ⭐ 142 stars — `skillsmp`
    Deploy and manage Kubernetes clusters with automated rollbacks and blue-green deployments.
-   Install: /plugin install k8s-deployer
-   Repo: https://github.com/user/k8s-deployer
+   Install: `/plugin install k8s-deployer`
+   If this command fails, visit the Skill link and follow the repository's own install instructions.
+   Skill: https://github.com/user/k8s-deployer/blob/main/SKILL.md
 
 2. **helm-chart-manager** ⭐ 89 stars — `skillsmp`
    Manage Helm chart lifecycle: install, upgrade, diff, and rollback.
-   Install: /plugin install helm-chart-manager
-   Repo: https://github.com/user/helm-chart-manager
+   Install: `/plugin install helm-chart-manager`
+   If this command fails, visit the Skill link and follow the repository's own install instructions.
+   Skill: https://github.com/user/helm-chart-manager/blob/main/SKILL.md
 
 Want me to fetch the full SKILL.md for any of these before you install?
 ```
@@ -45,18 +47,36 @@ Want me to fetch the full SKILL.md for any of these before you install?
 
 ### Install
 
+**Claude Code**
+
 ```bash
 # Clone into your Claude Code skills directory
 git clone https://github.com/yya007/skill-finder ~/.claude/skills/skill-finder
 
 # Install runtime dependencies
 pip install -r ~/.claude/skills/skill-finder/scripts/requirements.txt
-
-# Download the latest pre-built index (~100 MB)
-python ~/.claude/skills/skill-finder/scripts/update_index.py
 ```
 
+The index is included in the repository. Just ask Claude: _"find a skill for X"_
+
 Claude Code will auto-invoke SkillFinder when you ask to find or search for skills.
+
+**OpenClaw**
+
+```bash
+clawhub install skill-finder
+ollama pull qwen3-embedding:0.6b
+python ~/.openclaw/skills/skill-finder/scripts/update_index.py
+```
+
+**Codex**
+
+```bash
+git clone https://github.com/yya007/skill-finder ~/.codex/skills/skill-finder
+pip install -r ~/.codex/skills/skill-finder/scripts/requirements.txt
+ollama pull qwen3-embedding:0.6b
+python ~/.codex/skills/skill-finder/scripts/update_index.py
+```
 
 ### Usage — natural language (recommended)
 
@@ -68,6 +88,11 @@ Just ask Claude:
 - "compare skills for Terraform infrastructure"
 
 ### Usage — CLI
+
+> **CLI vs agent:** `scripts/search.py` returns a raw vector-similarity ranking.
+> The agent layer (query expansion, tiered fallback, reranking by intent) is not
+> replicated here. Use the CLI for scripting or development; use the agent
+> integration for discovery in normal use.
 
 ```bash
 cd ~/.claude/skills/skill-finder
@@ -93,7 +118,7 @@ python scripts/search.py "pptx presentation" --no-json --propose 5
 # Fetch a specific skill's full SKILL.md before installing
 python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
 
-# Check for and apply index updates
+# Pull the latest weekly index update (optional — index is already included)
 python scripts/update_index.py
 ```
 
@@ -104,6 +129,48 @@ python scripts/update_index.py
 | Claude Code | `claude_code` |
 | OpenClaw | `openclaw` |
 | Codex | `codex` |
+
+---
+
+## Why not just Google it?
+
+The [Agent Skills](https://agentskills.io) open standard (originally developed by Anthropic) is now supported by 30+ AI tools: Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and more. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
+
+**Searching the web manually:**
+
+```
+$ # Google: "kubernetes deploy claude code skill"
+→ 2,840,000 results — blog posts, Stack Overflow, unrelated GitHub repos
+→ No quality signals: is this repo maintained? 5 stars or 5,000?
+→ No install commands visible in results
+→ GitHub code search requires login; finds files, not skills as units
+→ 20–30 minutes to find 3 relevant options — if they exist at all
+```
+
+**SkillFinder:**
+
+```
+$ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
+
+[!] NOTE: Skills are third-party code. Always review before installing.
+
+1. k8s-deployer  ⭐ 142
+   Deploy and manage Kubernetes clusters with rollbacks and blue-green deploys.
+   https://github.com/user/k8s-deployer
+   [claude_code] /plugin install k8s-deployer
+
+2. helm-chart-manager  ⭐ 89
+   Manage Helm chart lifecycle: install, upgrade, diff, and rollback.
+   https://github.com/user/helm-chart-manager
+   [claude_code] /plugin install helm-chart-manager
+
+3. terraform-k8s  ⭐ 61
+   Provision Kubernetes infrastructure on AWS/GCP/Azure via Terraform.
+   https://github.com/user/terraform-k8s
+   [claude_code] /plugin install terraform-k8s
+```
+
+Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included. The official Anthropic skills repo alone has 93,700+ stars — and SkillFinder indexes it alongside SkillsMP, ClawHub, and SkillHub automatically.
 
 ---
 
@@ -167,7 +234,7 @@ Calls local Ollama (`qwen3-embedding:0.6b`) to embed all skills. Writes `data/em
 python pipeline/build_index.py
 ```
 
-Produces `data/index.faiss` and `data/metadata.jsonl`. These are the files distributed as a GitHub Release artifact.
+Produces `data/index.faiss` and `data/metadata.jsonl`. These are the runtime index files committed to the repo and also published as a GitHub Release artifact for weekly updates.
 
 ### Run tests
 
@@ -203,7 +270,7 @@ After deduplication and quality filtering: **10,000–20,000 unique skills** in 
 
 ## How it works
 
-1. **Weekly CI pipeline** (GitHub Actions): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → publishes as a GitHub Release artifact.
+1. **Weekly CI pipeline** (GitHub Actions): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → commits the updated index to the repo and publishes a GitHub Release artifact for users who want to pull updates manually via `update_index.py`.
 
 2. **Runtime** (your machine): query is embedded locally via Ollama → FAISS nearest-neighbor search (< 200 ms on CPU) → candidate pool returned to Claude → Claude reranks and presents the best matches.
 

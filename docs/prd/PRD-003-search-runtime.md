@@ -245,8 +245,10 @@ Ollama is a system dependency, not a Python package. Installation instructions: 
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- Should `update_index.py` verify the download against a GPG signature in addition to SHA256? This would prevent a compromised GitHub Release from being accepted.
-- What should `search.py` do when attribute filters are so restrictive that fewer than `propose_n` candidates pass? Options: return whatever passed (with a count warning in the JSON), or relax filters and annotate results. Leaning toward return-what-passed + warning field.
-- Should platform detection (which platform the user is on) be automatic, defaulting `--platform` to `claude_code`, or always explicit? Auto-default seems better UX.
+**GPG signature for downloads** — Decided: SHA256 only for v1. GPG would require key pair management, signing infrastructure, and user-facing key verification UX. The threat model (a compromised GitHub Release) is adequately addressed by SHA256 verification: if the release tarball is tampered with, the checksum in the release body won't match. Revisit if the project reaches a scale where targeted supply-chain attacks become a realistic concern.
+
+**Fewer candidates than `propose_n`** — Resolved. `search.py` returns whatever passes the filters, up to `propose_n * 3`. No warning field was added to the JSON output; instead the SKILL.md agent instructions handle sparse results via `sim_score` threshold: if all scores are `< 0.4`, the agent warns the user to rephrase. This keeps the script output simple and puts intelligence in the agent layer.
+
+**Platform auto-default** — Resolved. The SKILL.md Agent Instructions default to `--platform claude_code` since SkillFinder is a Claude Code skill. The agent overrides to `--platform openclaw` or `--platform codex` if the user's context indicates a different platform, and omits `--platform` entirely if the user asks for cross-platform results.

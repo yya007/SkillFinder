@@ -1,6 +1,6 @@
 # PRD-005: CI/CD & Release Automation
 
-**Status:** Planned
+**Status:** Implemented
 **Phase:** 5 of 5
 **Depends on:** PRD-001, PRD-002 (pipeline scripts work), PRD-004 (release artifact defined)
 **Blocks:** Nothing (final phase)
@@ -22,9 +22,10 @@ The pre-built FAISS index is the core value delivery of SkillFinder. Without an 
 
 ## Non-Goals
 
-- Real-time or incremental updates (weekly is sufficient for v1)
+- Real-time updates (weekly cadence is sufficient)
 - Multi-region CDN distribution (GitHub Releases is the CDN)
 - Automated rollback to previous index on quality regression (manual rollback only for v1)
+- Updating or deleting existing skills in the index without a full rebuild
 
 ---
 
@@ -75,6 +76,46 @@ No other secrets are needed. Embedding runs locally via Ollama in CI.
 - If fail: post failure annotation with diff; stop release; leave previous release intact
 
 Both gates run as Python assertions in the pipeline scripts, returning non-zero on failure.
+
+### F5 — Incremental vs Full Rebuild Strategy
+
+The embedding step is the pipeline bottleneck (~60 min for 20K skills). Most weekly runs add only a small fraction of new skills, making a full re-embed wasteful. The pipeline automatically selects the cheaper path.
+
+#### Decision rule
+
+After normalization, the workflow compares the new skill count against the previous release count:
+
+| Condition | Path |
+|-----------|------|
+| No previous release | Full rebuild |
+| `force_rebuild = true` (manual input) | Full rebuild |
+| `\|new - prev\| / prev ≥ 20%` | Full rebuild |
+| `\|new - prev\| / prev < 20%` | **Incremental** |
+
+#### Incremental path (`pipeline/incremental_update.py`)
+
+1. Download the previous release artifact and extract to `data/`.
+2. Load existing skill IDs from `data/metadata.jsonl`.
+3. Find skills in `unified_skills.jsonl` whose ID is not in the existing set.
+4. Embed only the new skills via Ollama.
+5. L2-normalise and call `index.add(new_vecs)` on the loaded `IndexFlatIP`.
+6. Append new rows to `metadata.jsonl`; overwrite `version.txt`.
+
+**Limitations of incremental path:**
+- Cannot update changed descriptions for existing skills (full rebuild required).
+- Cannot remove skills deleted upstream (full rebuild required).
+- Only works with `IndexFlatIP` (< 50k vectors). Once the index exceeds 50k skills and switches to `IndexIVFFlat`, a full rebuild is always required.
+
+#### Full rebuild path
+
+Runs the complete pipeline: `embed.py` (all skills) → `build_index.py`. Triggered by the conditions above or when the incremental path raises `IncrementalError`.
+
+#### Estimated time savings
+
+| Index size | Full rebuild | Incremental (5% new) | Savings |
+|------------|-------------|----------------------|---------|
+| 10K skills | ~30 min | ~2 min | ~93% |
+| 20K skills | ~60 min | ~3 min | ~95% |
 
 ### F4 — Parallelization
 
@@ -280,8 +321,10 @@ Tags follow the format `index-YYYYMMDD` (e.g., `index-20260310`). This is not Se
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- GitHub Actions `ubuntu-latest` has 14GB RAM. FAISS index build for 20K skills × 1024 dims peaks at ~2GB — should be fine. Verify for larger index variants.
-- `softprops/action-gh-release@v2` is a third-party action. Review its source or pin to a specific commit SHA to avoid supply-chain risk.
-- Should old releases be cleaned up automatically (e.g., keep last 4 weekly releases)? Leaving them all means users can pin to a specific index date.
+**RAM for FAISS index build** — Resolved. Peak memory for 20K skills × 1024 dims is ~2 GB (embeddings array) + ~200 MB (FAISS index in RAM) = ~2.2 GB total. `ubuntu-latest` provides 14 GB; no issue. If the index grows beyond 200K skills the `IndexIVFFlat` path (already implemented in `build_index.py`) keeps memory bounded, and a larger runner can be selected via `runs-on`.
+
+**`softprops/action-gh-release` supply-chain risk** — Resolved. The workflow pins to the exact commit SHA `b25b93d384199fc0fc8c2e126b2d937a0cbeb2ae` (v2) rather than the mutable `@v2` tag. This ensures the action cannot be silently changed upstream. SHA should be re-evaluated when intentionally upgrading the action.
+
+**Automatic old release cleanup** — Resolved. Phase 10 of the workflow deletes all `index-*` releases beyond the 3 most recent using `gh release delete --cleanup-tag`. Keeping 3 (≈ 3 weeks of history) gives users a grace window to pull a working artifact if the latest fails verification, without accumulating unbounded storage.
