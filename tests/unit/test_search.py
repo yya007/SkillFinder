@@ -3,7 +3,7 @@ Unit tests for scripts/search.py
 
 Ollama calls are patched throughout. Tests verify:
   - embed_query: applies QUERY_PREFIX, returns L2-normalized float32 vector
-  - check_ollama: raises OllamaNotAvailableError when unreachable
+  - ensure_ollama: raises OllamaNotAvailableError when unreachable
   - load_index: loads index + metadata, validates alignment
   - apply_filters: platform, source filtering (all combinations)
   - search: end-to-end with tiny real FAISS index
@@ -21,7 +21,7 @@ from scripts.search import (
     AlignmentError,
     OllamaNotAvailableError,
     apply_filters,
-    check_ollama,
+    ensure_ollama,
     embed_query,
     format_results,
     load_index,
@@ -94,29 +94,30 @@ class TestEmbedQuery:
 
 
 # ---------------------------------------------------------------------------
-# check_ollama
+# ensure_ollama
 # ---------------------------------------------------------------------------
 
-class TestCheckOllama:
-    def test_does_not_raise_when_available(self):
+class TestEnsureOllama:
+    def test_returns_none_when_already_running(self):
         with patch("requests.get") as mock_get:
             mock_get.return_value = MagicMock(status_code=200)
-            check_ollama()  # should not raise
+            result = ensure_ollama()  # should not raise
+            assert result is None  # already running, did not start a new process
 
-    def test_raises_with_install_instructions_when_unavailable(self):
-        import requests
-        with patch("requests.get", side_effect=requests.ConnectionError()):
-            with pytest.raises(OllamaNotAvailableError) as exc_info:
-                check_ollama()
-            assert "ollama" in str(exc_info.value).lower()
+    def test_raises_with_install_instructions_when_ollama_missing(self):
+        with patch("requests.get", side_effect=Exception("connection refused")):
+            with patch("subprocess.Popen", side_effect=FileNotFoundError()):
+                with pytest.raises(OllamaNotAvailableError) as exc_info:
+                    ensure_ollama()
+                assert "ollama" in str(exc_info.value).lower()
 
     def test_error_message_contains_install_hint(self):
-        import requests
-        with patch("requests.get", side_effect=requests.ConnectionError()):
-            with pytest.raises(OllamaNotAvailableError) as exc_info:
-                check_ollama()
-            msg = str(exc_info.value).lower()
-            assert "install" in msg or "ollama.com" in msg
+        with patch("requests.get", side_effect=Exception("connection refused")):
+            with patch("subprocess.Popen", side_effect=FileNotFoundError()):
+                with pytest.raises(OllamaNotAvailableError) as exc_info:
+                    ensure_ollama()
+                msg = str(exc_info.value).lower()
+                assert "install" in msg or "ollama.com" in msg
 
 
 # ---------------------------------------------------------------------------
