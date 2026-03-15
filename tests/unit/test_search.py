@@ -5,7 +5,7 @@ Ollama calls are patched throughout. Tests verify:
   - embed_query: applies QUERY_PREFIX, returns L2-normalized float32 vector
   - check_ollama: raises OllamaNotAvailableError when unreachable
   - load_index: loads index + metadata, validates alignment
-  - apply_filters: platform, source, safety_only filtering (all combinations)
+  - apply_filters: platform, source filtering (all combinations)
   - search: end-to-end with tiny real FAISS index
   - format_results: JSON and human-readable output correctness
 """
@@ -181,21 +181,21 @@ class TestLoadIndex:
 
 class TestApplyFilters:
     def test_no_filters_returns_all(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=[], sources=[], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=[], sources=[])
         assert len(result) == len(skills_for_search)
 
     def test_platform_filter_claude_code(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=["claude_code"], sources=[], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=["claude_code"], sources=[])
         for skill in result:
             assert "claude_code" in skill["install_cmd"]
 
     def test_platform_filter_openclaw(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=["openclaw"], sources=[], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=["openclaw"], sources=[])
         for skill in result:
             assert "openclaw" in skill["install_cmd"]
 
     def test_platform_filter_codex(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=["codex"], sources=[], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=["codex"], sources=[])
         names = [s["name"] for s in result]
         assert "codex-helper" in names
         assert "k8s-deployer" not in names
@@ -205,26 +205,12 @@ class TestApplyFilters:
             skills_for_search,
             platforms=["claude_code", "openclaw"],
             sources=[],
-            safety_only=False,
         )
         for skill in result:
             assert "claude_code" in skill["install_cmd"] or "openclaw" in skill["install_cmd"]
 
-    def test_safety_only_excludes_flagged(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=[], sources=[], safety_only=True)
-        for skill in result:
-            assert skill["quality"]["safety_flag"] is False
-
-    def test_safety_only_with_no_flagged_returns_all(self):
-        skills = [
-            {"install_cmd": {"claude_code": "/plugin install a"}, "source": ["skillsmp"], "quality": {"safety_flag": False}},
-            {"install_cmd": {"claude_code": "/plugin install b"}, "source": ["skillsmp"], "quality": {"safety_flag": False}},
-        ]
-        result = apply_filters(skills, platforms=[], sources=[], safety_only=True)
-        assert len(result) == 2
-
     def test_source_filter(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=[], sources=["clawhub"], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=[], sources=["clawhub"])
         for skill in result:
             assert "clawhub" in skill["source"]
 
@@ -233,27 +219,14 @@ class TestApplyFilters:
             skills_for_search,
             platforms=[],
             sources=["skillsmp", "clawhub"],
-            safety_only=False,
         )
         for skill in result:
             assert "skillsmp" in skill["source"] or "clawhub" in skill["source"]
 
-    def test_combined_platform_and_safety(self, skills_for_search):
-        result = apply_filters(
-            skills_for_search,
-            platforms=["claude_code"],
-            sources=[],
-            safety_only=True,
-        )
-        for skill in result:
-            assert "claude_code" in skill["install_cmd"]
-            assert skill["quality"]["safety_flag"] is False
-
     def test_preserves_order(self, skills_for_search):
         # Filter to a strict subset so ordering is non-trivial to verify
         result = apply_filters(
-            skills_for_search, platforms=["claude_code"], sources=[], safety_only=False
-        )
+            skills_for_search, platforms=["claude_code"], sources=[],         )
         result_names = [s["name"] for s in result]
         # Build expected: input_names filtered to only those in results (original order)
         result_set = set(result_names)
@@ -261,10 +234,10 @@ class TestApplyFilters:
         assert result_names == expected_order
 
     def test_empty_input_returns_empty(self):
-        assert apply_filters([], platforms=["claude_code"], sources=[], safety_only=True) == []
+        assert apply_filters([], platforms=["claude_code"], sources=[]) == []
 
     def test_impossible_filter_returns_empty(self, skills_for_search):
-        result = apply_filters(skills_for_search, platforms=["nonexistent_platform"], sources=[], safety_only=False)
+        result = apply_filters(skills_for_search, platforms=["nonexistent_platform"], sources=[])
         assert result == []
 
 
@@ -365,16 +338,29 @@ class TestFormatResults:
         results = [{"sim_score": 0.9, **s} for s in skills_for_search[:2]]
         output = format_results(results, as_json=True)
         parsed = json.loads(output)
-        assert isinstance(parsed, list)
-        assert len(parsed) == 2
+        assert "safety_notice" in parsed
+        assert isinstance(parsed["results"], list)
+        assert len(parsed["results"]) == 2
 
     def test_json_output_contains_required_fields(self, skill):
         results = [{"sim_score": 0.85, **skill}]
         output = format_results(results, as_json=True)
         parsed = json.loads(output)
-        item = parsed[0]
+        item = parsed["results"][0]
         for field in ("sim_score", "name", "description", "repo_url"):
             assert field in item, f"Missing field: {field}"
+
+    def test_json_output_contains_safety_notice(self, skill):
+        results = [{"sim_score": 0.85, **skill}]
+        output = format_results(results, as_json=True)
+        parsed = json.loads(output)
+        assert "safety_notice" in parsed
+        assert "third-party" in parsed["safety_notice"].lower()
+
+    def test_human_readable_output_contains_safety_notice(self, skill):
+        results = [{"sim_score": 0.85, **skill}]
+        output = format_results(results, as_json=False)
+        assert "third-party" in output.lower()
 
     def test_human_readable_output_contains_names(self, skills_for_search):
         results = [{"sim_score": 0.9, **skills_for_search[0]}]
@@ -383,10 +369,6 @@ class TestFormatResults:
 
     def test_empty_results_returns_valid_output(self):
         json_out = format_results([], as_json=True)
-        assert json.loads(json_out) == []
-
-    def test_safety_flag_visible_in_json(self, skill_flagged):
-        results = [{"sim_score": 0.8, **skill_flagged}]
-        output = format_results(results, as_json=True)
-        parsed = json.loads(output)
-        assert parsed[0]["safety_flag"] is True
+        parsed = json.loads(json_out)
+        assert parsed["results"] == []
+        assert "safety_notice" in parsed

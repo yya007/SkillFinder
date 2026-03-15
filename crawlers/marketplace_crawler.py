@@ -38,7 +38,10 @@ import yaml
 from crawlers.base import (
     GITHUB_API,
     extract_github_url,
+    fetch_repo_metadata,
+    find_skill_md_paths,
     github_get,
+    infer_platforms,
     load_existing_urls,
     make_session,
     write_jsonl,
@@ -57,6 +60,16 @@ TARGET_REPOS: list[str] = [
     "alirezarezvani/claude-skills",
 ]
 
+# Repository-search queries used for broader community discovery.
+# Each query is sent to GET /search/repositories.
+REPO_SEARCH_QUERIES: list[str] = [
+    "topic:claude-code-skills",
+    "topic:claude-skills",
+    "topic:agent-skills",
+    "claude code skills in:name,description",
+    "openclaw skills in:name,description",
+]
+
 # Repos whose owner is "anthropics" are flagged as official
 _OFFICIAL_OWNER = "anthropics"
 
@@ -68,8 +81,9 @@ _OFFICIAL_OWNER = "anthropics"
 def list_skill_dirs(session, repo_full_name: str) -> list[dict]:
     """Find all SKILL.md files in a repo and return enriched entry dicts.
 
-    Uses the GitHub Trees API to discover SKILL.md files, then fetches each
-    file's content via the Contents API.
+    Uses find_skill_md_paths() (Trees API with Code Search fallback for
+    truncated repos) to discover paths, then fetches each file's content
+    via the Contents API.
 
     Args:
         session:        A requests.Session from make_session().
@@ -79,24 +93,13 @@ def list_skill_dirs(session, repo_full_name: str) -> list[dict]:
         List of dicts with keys: name, description, path, parent_repo_url,
         skill_md_content, official. Returns an empty list on error.
     """
-    url = f"{GITHUB_API}/repos/{repo_full_name}/git/trees/HEAD"
-    try:
-        data = github_get(session, url, params={"recursive": "1"})
-    except RuntimeError as exc:
-        logger.warning("Could not fetch tree for %s: %s", repo_full_name, exc)
-        return []
-
     owner = repo_full_name.split("/")[0].lower() if "/" in repo_full_name else ""
     is_official = owner == _OFFICIAL_OWNER
     parent_repo_url = f"https://github.com/{repo_full_name}".lower()
 
-    tree = data.get("tree", [])
+    paths = find_skill_md_paths(session, repo_full_name)
     entries = []
-    for item in tree:
-        path = item.get("path", "")
-        if not (path.upper().endswith("SKILL.MD") and item.get("type") == "blob"):
-            continue
-
+    for path in paths:
         content = fetch_skill_content(session, repo_full_name, path)
         name = _derive_name_from_path(path, repo_full_name)
 
@@ -184,7 +187,8 @@ def build_raw_record(entry: dict) -> dict:
 
     Args:
         entry: Dict with keys: name, description, path, parent_repo_url,
-               skill_md_content (str or None), official (bool).
+               skill_md_content (str or None), official (bool),
+               default_branch (str, optional).
 
     Returns:
         Raw record dict conforming to the crawler schema.
@@ -202,11 +206,12 @@ def build_raw_record(entry: dict) -> dict:
 
     name = frontmatter.get("name") or entry.get("name", "")
     description = frontmatter.get("description") or entry.get("description", "")
-    triggers = frontmatter.get("triggers") or []
-    if not isinstance(triggers, list):
-        triggers = [str(triggers)]
 
     is_official = entry.get("official", False)
+    path = entry.get("path", "")
+    default_branch = entry.get("default_branch", "main")
+    skill_md_url = f"{parent_url}/blob/{default_branch}/{path}" if path else ""
+    platforms = infer_platforms(frontmatter, "marketplace")
 
     return {
         "repo_url": repo_url,
@@ -214,10 +219,11 @@ def build_raw_record(entry: dict) -> dict:
         "description": description,
         "source": "marketplace",
         "raw_metadata": {
-            "triggers": triggers,
             "official": is_official,
-            "path": entry.get("path", ""),
+            "path": path,
             "parent_repo": parent_url,
+            "skill_md_url": skill_md_url,
+            "platforms": platforms,
         },
     }
 
@@ -232,26 +238,6 @@ def _derive_name_from_path(path: str, repo_full_name: str) -> str:
         return parts[-2]
     # Top-level SKILL.md — use the repo name
     return repo_full_name.split("/")[-1] if "/" in repo_full_name else repo_full_name
-
-
-# ---------------------------------------------------------------------------
-# Repo-level metadata fetch
-# ---------------------------------------------------------------------------
-
-def _fetch_repo_meta(session, repo_full_name: str) -> dict:
-    """Fetch top-level metadata for a repo."""
-    try:
-        data = github_get(session, f"{GITHUB_API}/repos/{repo_full_name}")
-    except RuntimeError as exc:
-        logger.warning("Could not fetch repo metadata for %s: %s", repo_full_name, exc)
-        return {}
-    return {
-        "stargazers_count": data.get("stargazers_count", 0),
-        "pushed_at": data.get("pushed_at", ""),
-        "topics": data.get("topics", []),
-        "description": data.get("description", ""),
-        "default_branch": data.get("default_branch", "main"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -285,11 +271,48 @@ def _fetch_marketplace_json(session, repo_full_name: str, default_branch: str = 
         return []
 
 
+def _discover_via_repo_search(session) -> list[str]:
+    """Discover community skill repos via GitHub Repository Search API.
+
+    Queries each entry in REPO_SEARCH_QUERIES and collects up to 100 repos
+    per query.  Returns a deduplicated list of "{owner}/{repo}" strings.
+    """
+    repos: list[str] = []
+    seen: set[str] = set()
+
+    for query in REPO_SEARCH_QUERIES:
+        try:
+            data = github_get(
+                session,
+                f"{GITHUB_API}/search/repositories",
+                params={"q": query, "per_page": 100},
+            )
+        except RuntimeError as exc:
+            logger.warning("Repo search failed for %r: %s", query, exc)
+            continue
+
+        for item in data.get("items", []):
+            html_url = item.get("html_url", "")
+            normalized = extract_github_url(html_url)
+            if normalized:
+                full_name = normalized.removeprefix("https://github.com/")
+                if full_name not in seen:
+                    seen.add(full_name)
+                    repos.append(full_name)
+
+    logger.info("Repo search discovered %d repos", len(repos))
+    return repos
+
+
 def _discover_marketplace_repos(session, limit: int = 50) -> list[str]:
     """Discover additional repos that have a marketplace.json at root.
 
-    Uses GitHub Code Search.  Returns a list of "{owner}/{repo}" strings.
+    Combines GitHub Code Search (filename:marketplace.json) with broader
+    Repository Search (topic/keyword queries).  Returns a deduplicated list
+    of "{owner}/{repo}" strings.
     """
+    # Method 1: code search for marketplace.json
+    code_search_repos: list[str] = []
     try:
         data = github_get(
             session,
@@ -299,21 +322,29 @@ def _discover_marketplace_repos(session, limit: int = 50) -> list[str]:
                 "per_page": min(limit, 100),
             },
         )
+        seen_code: set[str] = set()
+        for item in data.get("items", []):
+            repo = item.get("repository", {})
+            full_name = repo.get("full_name", "")
+            if full_name and full_name not in seen_code:
+                seen_code.add(full_name)
+                code_search_repos.append(full_name)
     except RuntimeError as exc:
-        logger.warning("marketplace.json discovery search failed: %s", exc)
-        return []
+        logger.warning("marketplace.json code search failed: %s", exc)
 
-    repos = []
+    # Method 2: repository search by topic/keyword
+    repo_search_repos = _discover_via_repo_search(session)
+
+    # Combine, deduplicate
     seen: set[str] = set()
-    for item in data.get("items", []):
-        repo = item.get("repository", {})
-        full_name = repo.get("full_name", "")
-        if full_name and full_name not in seen:
-            seen.add(full_name)
-            repos.append(full_name)
+    combined: list[str] = []
+    for repo in code_search_repos + repo_search_repos:
+        if repo not in seen:
+            seen.add(repo)
+            combined.append(repo)
 
-    logger.info("Discovered %d additional marketplace repos", len(repos))
-    return repos
+    logger.info("Discovered %d additional marketplace repos total", len(combined))
+    return combined
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +413,8 @@ def run(
             break
 
         logger.info("Processing repo: %s", repo_full_name)
+        repo_meta = fetch_repo_metadata(session, repo_full_name)
+        default_branch = repo_meta.get("default_branch", "main")
         entries = list_skill_dirs(session, repo_full_name)
 
         if not entries:
@@ -399,6 +432,7 @@ def run(
                 continue
             seen_paths.add(dedup_key)
 
+            entry["default_branch"] = default_branch
             record = build_raw_record(entry)
             batch.append(record)
 

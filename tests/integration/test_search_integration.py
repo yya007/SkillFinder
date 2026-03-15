@@ -114,17 +114,6 @@ class TestSearchIntegration:
         for r in claude_results:
             assert "claude_code" in r["install_cmd"]
 
-    def test_safety_only_excludes_flagged_skills(self, built_index):
-        index, metadata = load_index(
-            str(built_index / "index.faiss"),
-            str(built_index / "metadata.jsonl"),
-        )
-        vec = self._random_query_vec()
-        with patch("scripts.search.embed_query", return_value=vec):
-            results = search("web scraping", index, metadata, safety_only=True)
-        for r in results:
-            assert r["quality"]["safety_flag"] is False
-
     def test_json_output_is_parseable(self, built_index):
         index, metadata = load_index(
             str(built_index / "index.faiss"),

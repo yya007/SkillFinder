@@ -1,7 +1,8 @@
 """Tests for crawlers/clawhub_crawler.py."""
+import base64
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -139,18 +140,6 @@ class TestBuildRawRecord:
         record = build_raw_record(item)
         assert "Security" in record["raw_metadata"]["categories"]
 
-    def test_safety_scan_default_unknown(self):
-        from crawlers.clawhub_crawler import build_raw_record
-        item = self._make_item()
-        record = build_raw_record(item)
-        assert record["raw_metadata"]["safety_scan"] == "unknown"
-
-    def test_safety_scan_custom_value(self):
-        from crawlers.clawhub_crawler import build_raw_record
-        item = self._make_item()
-        record = build_raw_record(item, safety_scan="clean")
-        assert record["raw_metadata"]["safety_scan"] == "clean"
-
     def test_description_from_item(self):
         from crawlers.clawhub_crawler import build_raw_record
         item = self._make_item(description="Automates deployments.")
@@ -171,17 +160,101 @@ class TestBuildRawRecord:
 
 
 # ---------------------------------------------------------------------------
+# TestFetchAwesomeReadme
+# ---------------------------------------------------------------------------
+
+class TestFetchAwesomeReadme:
+    """Unit tests for fetch_awesome_readme()."""
+
+    def test_uses_download_url_when_present(self):
+        from crawlers.clawhub_crawler import fetch_awesome_readme
+
+        mock_session = MagicMock()
+        raw_content = "# Awesome OpenClaw Skills\n\n## Tools\n"
+        raw_resp = MagicMock()
+        raw_resp.text = raw_content
+        raw_resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = raw_resp
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get:
+            mock_get.return_value = {
+                "download_url": "https://raw.githubusercontent.com/VoltAgent/awesome-openclaw-skills/main/README.md",
+                "encoding": "base64",
+                "content": base64.b64encode(b"should not be decoded").decode(),
+            }
+            content = fetch_awesome_readme(mock_session)
+
+        assert content == raw_content
+        # session.get called with the download_url
+        mock_session.get.assert_called_once()
+        call_url = mock_session.get.call_args[0][0]
+        assert "raw.githubusercontent.com" in call_url
+
+    def test_falls_back_to_base64_when_no_download_url(self):
+        from crawlers.clawhub_crawler import fetch_awesome_readme
+
+        readme_text = "# Awesome OpenClaw Skills\n\n## Tools\n"
+        encoded = base64.b64encode(readme_text.encode()).decode()
+        mock_session = MagicMock()
+
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get:
+            mock_get.return_value = {
+                "encoding": "base64",
+                "content": encoded,
+                # no download_url key
+            }
+            content = fetch_awesome_readme(mock_session)
+
+        assert content == readme_text
+        # session.get should NOT have been called (no raw download needed)
+        mock_session.get.assert_not_called()
+
+    def test_raises_on_unknown_encoding_and_no_download_url(self):
+        from crawlers.clawhub_crawler import fetch_awesome_readme
+
+        mock_session = MagicMock()
+        with patch("crawlers.clawhub_crawler.github_get") as mock_get:
+            mock_get.return_value = {
+                "encoding": "gzip",  # unexpected
+                "content": "compressed",
+            }
+            with pytest.raises(RuntimeError, match="Unexpected encoding"):
+                fetch_awesome_readme(mock_session)
+
+
+# ---------------------------------------------------------------------------
 # TestRunClawhub — unit tests with mocked HTTP
 # ---------------------------------------------------------------------------
 
 class TestRunClawhub:
     """Unit tests for clawhub_crawler.run() with HTTP mocked out."""
 
+    def _mock_meta(self):
+        """Return a fake fetch_repo_metadata result."""
+        return {"stargazers_count": 5, "pushed_at": "2026-01-01", "default_branch": "main"}
+
+    def _patch_run(self, find_paths_return=None):
+        """Return a context-manager stack that patches all HTTP calls in run()."""
+        if find_paths_return is None:
+            find_paths_return = ["SKILL.md"]
+        return (
+            patch("crawlers.clawhub_crawler.fetch_awesome_readme"),
+            patch("crawlers.clawhub_crawler.fetch_repo_metadata"),
+            patch("crawlers.clawhub_crawler.find_skill_md_paths"),
+            patch("crawlers.clawhub_crawler._fetch_skill_md"),
+        )
+
     def test_respects_limit(self, tmp_path):
         from crawlers.clawhub_crawler import run
 
-        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch:
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
+            mock_meta.return_value = self._mock_meta()
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             count = run(out, limit=2)
 
@@ -198,8 +271,14 @@ class TestRunClawhub:
 - [gitlab-skill](https://gitlab.com/user/gitlab-skill) — Bad source.
 - [another-github](https://github.com/user/another-github) — Also good.
 """
-        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch:
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_with_non_github
+            mock_meta.return_value = self._mock_meta()
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             count = run(out)
 
@@ -212,8 +291,14 @@ class TestRunClawhub:
     def test_output_has_required_fields(self, tmp_path):
         from crawlers.clawhub_crawler import run
 
-        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch:
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
+            mock_meta.return_value = self._mock_meta()
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             run(out, limit=1)
 
@@ -231,16 +316,120 @@ class TestRunClawhub:
             "name": "k8s-deployer",
             "description": "Already crawled.",
             "source": "clawhub",
-            "raw_metadata": {"categories": ["DevOps"], "safety_scan": "unknown"},
+            "raw_metadata": {"categories": ["DevOps"]},
         }
         out.write_text(json.dumps(existing) + "\n")
 
-        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch:
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
+            mock_meta.return_value = self._mock_meta()
+            mock_paths.return_value = ["SKILL.md"]
+            mock_skill_md.return_value = None
             count = run(str(out), resume=True)
 
         # SAMPLE_AWESOME_README has 3 GitHub entries; 1 was already written
         assert count == 2
+
+    def test_subtree_hint_skips_trees_api(self, tmp_path):
+        from crawlers.clawhub_crawler import run
+
+        readme_with_subtree = (
+            "## Category\n\n"
+            "- [skill-a](https://github.com/openclaw/skills/tree/main/skills/skill-a)"
+            " — First subtree skill.\n"
+        )
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+            mock_fetch.return_value = readme_with_subtree
+            mock_meta.return_value = self._mock_meta()
+            mock_skill_md.return_value = None
+            out = str(tmp_path / "out.jsonl")
+            count = run(out)
+
+        mock_paths.assert_not_called()  # subtree hint → Trees API never called
+        assert count == 1
+        record = json.loads(Path(out).read_text().strip())
+        assert "skills/skill-a/SKILL.md" in record["raw_metadata"]["skill_md_url"]
+
+    def test_monorepo_dedup_uses_skill_path_not_repo_url(self, tmp_path):
+        from crawlers.clawhub_crawler import run
+
+        # Two items with different subtree hints in the same monorepo
+        readme_monorepo = (
+            "## Category\n\n"
+            "- [skill-a](https://github.com/openclaw/skills/tree/main/skills/skill-a)"
+            " — First skill.\n"
+            "- [skill-b](https://github.com/openclaw/skills/tree/main/skills/skill-b)"
+            " — Second skill.\n"
+        )
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+            mock_fetch.return_value = readme_monorepo
+            mock_meta.return_value = self._mock_meta()
+            mock_skill_md.return_value = None
+            out = str(tmp_path / "out.jsonl")
+            count = run(out)
+
+        # Both skills written — dedup key is (repo_url, skill_path), not repo_url alone
+        assert count == 2
+        mock_paths.assert_not_called()  # subtree hints bypass Trees API
+
+        lines = Path(out).read_text().strip().splitlines()
+        records = [json.loads(l) for l in lines]
+        # Same base repo_url but different skill_md_url
+        assert records[0]["repo_url"] == records[1]["repo_url"]
+        assert records[0]["raw_metadata"]["skill_md_url"] != records[1]["raw_metadata"]["skill_md_url"]
+        # fetch_repo_metadata called only once (cached on second item)
+        mock_meta.assert_called_once()
+
+    def test_resume_monorepo_uses_skill_md_url_key(self, tmp_path):
+        from crawlers.clawhub_crawler import run
+
+        readme_monorepo = (
+            "## Category\n\n"
+            "- [skill-a](https://github.com/openclaw/skills/tree/main/skills/skill-a)"
+            " — First skill.\n"
+            "- [skill-b](https://github.com/openclaw/skills/tree/main/skills/skill-b)"
+            " — Second skill.\n"
+        )
+        # Pre-populate with skill-a already crawled (identified by skill_md_url)
+        out = tmp_path / "out.jsonl"
+        existing = {
+            "repo_url": "https://github.com/openclaw/skills",
+            "name": "skill-a",
+            "description": "Already crawled.",
+            "source": "clawhub",
+            "raw_metadata": {
+                "skill_md_url": "https://github.com/openclaw/skills/blob/main/skills/skill-a/SKILL.md",
+                "categories": [],
+                "stars": 5,
+                "pushed_at": "2026-01-01",
+                "platforms": ["openclaw"],
+            },
+        }
+        out.write_text(json.dumps(existing) + "\n")
+
+        with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
+             patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
+             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+            mock_fetch.return_value = readme_monorepo
+            mock_meta.return_value = self._mock_meta()
+            mock_skill_md.return_value = None
+            count = run(str(out), resume=True)
+
+        # Only skill-b is new; skill-a's skill_md_url already present in output
+        assert count == 1
+        lines = out.read_text().strip().splitlines()
+        assert len(lines) == 2  # 1 existing + 1 new
+        new_record = json.loads(lines[-1])
+        assert "skill-b" in new_record["raw_metadata"]["skill_md_url"]
 
 
 # ---------------------------------------------------------------------------

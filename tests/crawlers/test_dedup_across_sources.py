@@ -29,7 +29,7 @@ class TestGithubUrlDedup:
             "name": "kubernetes-deployer",
             "description": "Deploy k8s clusters from ClawHub.",
             "source": "clawhub",
-            "raw_metadata": {"categories": ["devops"], "safety_scan": "clean"},
+            "raw_metadata": {"categories": ["devops"]},
         }
         # Write as two separate raw files
         skillsmp_file = tmp_path / "skillsmp.jsonl"
@@ -45,7 +45,6 @@ class TestGithubUrlDedup:
         assert "skillsmp" in record["source"]
         assert "clawhub" in record["source"]
         assert record["quality"]["stars"] == 142  # from skillsmp
-        assert record["quality"]["safety_scan"] == "clean"  # from clawhub
 
     def test_git_suffix_variants_dedup_to_same_record(self, tmp_path):
         """https://github.com/user/repo.git and https://github.com/user/repo → same record."""
@@ -57,7 +56,7 @@ class TestGithubUrlDedup:
         rec2 = {
             "repo_url": "https://github.com/user/myskill",
             "name": "myskill", "description": "A skill from clawhub.", "source": "clawhub",
-            "raw_metadata": {"categories": ["tools"], "safety_scan": "clean"},
+            "raw_metadata": {"categories": ["tools"]},
         }
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
@@ -75,8 +74,8 @@ class TestGithubUrlDedup:
         assert count == 1
 
     def test_different_repos_not_merged(self, tmp_path):
-        rec1 = {"repo_url": "https://github.com/user/repo-a", "name": "a", "description": "desc a.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
-        rec2 = {"repo_url": "https://github.com/user/repo-b", "name": "b", "description": "desc b.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
+        rec1 = {"repo_url": "https://github.com/user/repo-a", "name": "a", "description": "desc a.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
+        rec2 = {"repo_url": "https://github.com/user/repo-b", "name": "b", "description": "desc b.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
         f2.write_text(json.dumps(rec2) + "\n")
@@ -91,7 +90,7 @@ class TestGithubUrlDedup:
             for src in ["skillsmp", "clawhub", "skillhub"]
         ]
         # Fix clawhub and skillhub records to have proper raw_metadata
-        records[1]["raw_metadata"] = {"categories": [], "safety_scan": "clean"}
+        records[1]["raw_metadata"] = {"categories": []}
         records[2]["raw_metadata"] = {"rank": "A", "overall_score": 8.0}
 
         files = []
@@ -108,8 +107,8 @@ class TestGithubUrlDedup:
 
     def test_non_github_url_not_deduped_with_github_url(self, tmp_path):
         """A GitLab skill and a GitHub skill with same name are NOT merged."""
-        rec1 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "On GitHub.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
-        rec2 = {"repo_url": "https://gitlab.com/user/myskill", "name": "myskill", "description": "On GitLab.", "source": "clawhub", "raw_metadata": {"categories": [], "safety_scan": "clean"}}
+        rec1 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "On GitHub.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
+        rec2 = {"repo_url": "https://gitlab.com/user/myskill", "name": "myskill", "description": "On GitLab.", "source": "clawhub", "raw_metadata": {"categories": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
         f2.write_text(json.dumps(rec2) + "\n")
@@ -120,7 +119,7 @@ class TestGithubUrlDedup:
         """Merged record ID equals sha256(canonical_key(repo_url))."""
         repo_url = "https://github.com/user/myskill"
         rec1 = {"repo_url": repo_url, "name": "myskill", "description": "A skill.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
-        rec2 = {"repo_url": repo_url + ".git", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": [], "safety_scan": "clean"}}
+        rec2 = {"repo_url": repo_url + ".git", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
         f2.write_text(json.dumps(rec2) + "\n")
@@ -131,7 +130,7 @@ class TestGithubUrlDedup:
     def test_merged_record_takes_max_stars(self, tmp_path):
         """When merging, the record with the highest star count wins."""
         rec_low = {"repo_url": "https://github.com/u/r", "name": "r", "description": "d.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
-        rec_high = {"repo_url": "https://github.com/u/r", "name": "r", "description": "d from clawhub.", "source": "clawhub", "raw_metadata": {"categories": [], "safety_scan": "clean", "stars": 200}}
+        rec_high = {"repo_url": "https://github.com/u/r", "name": "r", "description": "d from clawhub.", "source": "clawhub", "raw_metadata": {"categories": [], "stars": 200}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec_low) + "\n")
         f2.write_text(json.dumps(rec_high) + "\n")
@@ -143,30 +142,19 @@ class TestGithubUrlDedup:
     def test_case_insensitive_url_deduplication(self, tmp_path):
         """URLs differing only in case should dedup to the same record."""
         rec1 = {"repo_url": "https://github.com/User/MySkill", "name": "myskill", "description": "Skill.", "source": "skillsmp", "raw_metadata": {"stars": 3, "pushed_at": "2026-01-01", "topics": []}}
-        rec2 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": [], "safety_scan": "clean"}}
+        rec2 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
         f2.write_text(json.dumps(rec2) + "\n")
         count = normalize([str(f1), str(f2)], str(tmp_path / "out.jsonl"))
         assert count == 1
 
-    def test_safety_flag_set_when_clawhub_warns(self, tmp_path):
-        """Merged record has safety_flag=True when ClawHub reports a warning."""
-        rec_skillsmp = {"repo_url": "https://github.com/u/risky", "name": "risky", "description": "Risky skill.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
-        rec_clawhub = {"repo_url": "https://github.com/u/risky", "name": "risky", "description": "Risky skill from clawhub.", "source": "clawhub", "raw_metadata": {"categories": [], "safety_scan": "warning: suspicious network calls"}}
-        f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
-        f1.write_text(json.dumps(rec_skillsmp) + "\n")
-        f2.write_text(json.dumps(rec_clawhub) + "\n")
-        normalize([str(f1), str(f2)], str(tmp_path / "out.jsonl"))
-        record = json.loads((tmp_path / "out.jsonl").read_text().strip())
-        assert record["quality"]["safety_flag"] is True
-
     def test_all_unified_records_have_unique_ids(self, tmp_path):
         """After normalization, every record has a unique id."""
         records = [
             {"repo_url": f"https://github.com/user/skill-{i}", "name": f"skill-{i}",
              "description": f"Skill {i}.", "source": "skillsmp",
-             "raw_metadata": {"stars": i + 2, "pushed_at": "2026-01-01", "topics": []}}
+             "raw_metadata": {"stars": i + 10, "pushed_at": "2026-01-01", "topics": []}}
             for i in range(5)
         ]
         f = tmp_path / "raw.jsonl"

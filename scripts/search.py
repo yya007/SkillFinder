@@ -7,7 +7,7 @@ agent to review.
 
 Usage:
     python scripts/search.py "deploy kubernetes clusters" --propose 10
-    python scripts/search.py "web scraping" --platform claude_code --safety_only
+    python scripts/search.py "web scraping" --platform claude_code
     python scripts/search.py "ci/cd pipeline" --propose 5 --json
 """
 
@@ -154,7 +154,6 @@ def apply_filters(
     candidates: list[dict],
     platforms: list[str],
     sources: list[str],
-    safety_only: bool,
 ) -> list[dict]:
     """Filter a list of candidate skill dicts.
 
@@ -163,14 +162,9 @@ def apply_filters(
 
     - platforms: keep skills where install_cmd has at least one matching key
     - sources: keep skills where skill["source"] contains at least one match
-    - safety_only: exclude skills where quality.safety_flag is True
     """
     result = []
     for skill in candidates:
-        # Safety filter — check quality.safety_flag
-        if safety_only and skill.get("quality", {}).get("safety_flag") is True:
-            continue
-
         # Platform filter
         if platforms:
             available = set(skill.get("install_cmd", {}).keys())
@@ -198,7 +192,6 @@ def search(
     propose_n: int = 5,
     platforms: Optional[list[str]] = None,
     sources: Optional[list[str]] = None,
-    safety_only: bool = False,
     ollama_url: str = OLLAMA_URL,
 ) -> list[dict]:
     """Search the FAISS index and return filtered candidates.
@@ -238,7 +231,7 @@ def search(
         candidates.append(skill)
 
     # Apply attribute filters
-    filtered = apply_filters(candidates, platforms=platforms, sources=sources, safety_only=safety_only)
+    filtered = apply_filters(candidates, platforms=platforms, sources=sources)
 
     # Return up to propose_n * 3 results
     return filtered[:candidate_count]
@@ -248,14 +241,21 @@ def search(
 # Output formatting
 # ---------------------------------------------------------------------------
 
+SAFETY_NOTICE = (
+    "NOTE: Skills are third-party code. Always review a skill's repository "
+    "before installing it. The SkillFinder index does not vet or endorse any skill."
+)
+
+
 def format_results(results: list[dict], as_json: bool = False) -> str:
     """Format search results as JSON or human-readable text.
 
-    JSON mode: returns a JSON array where each item includes sim_score, name,
-    description, repo_url, install_cmd, quality, and safety_flag (flattened
-    from quality as a top-level key).
+    JSON mode: returns an object with a ``safety_notice`` field and a
+    ``results`` array (sim_score, name, description, repo_url, install_cmd,
+    quality per item).
 
-    Human-readable mode: one result per block, includes name and description.
+    Human-readable mode: prints a safety notice header, then one result block
+    per skill with name, description, and repo URL.
     """
     if as_json:
         output_items = []
@@ -265,16 +265,16 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
             item["name"] = r.get("name", "")
             item["description"] = r.get("description", "")
             item["repo_url"] = r.get("repo_url", "")
+            item["skill_md_url"] = r.get("skill_md_url", "")
+            item["platforms"] = r.get("platforms", [])
             item["install_cmd"] = r.get("install_cmd", {})
             item["quality"] = r.get("quality", {})
-            # Flatten safety_flag as a top-level key
-            item["safety_flag"] = r.get("quality", {}).get("safety_flag", False)
             output_items.append(item)
-        return json.dumps(output_items, indent=2)
+        return json.dumps({"safety_notice": SAFETY_NOTICE, "results": output_items}, indent=2)
     else:
         if not results:
             return "No results found."
-        lines = []
+        lines = [f"[!] {SAFETY_NOTICE}", ""]
         for i, r in enumerate(results, 1):
             name = r.get("name", "(unknown)")
             description = r.get("description", "")
@@ -330,12 +330,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Filter to skills from this registry "
             "(skillsmp, clawhub, skillhub, marketplace). Repeatable; values are OR-ed."
         ),
-    )
-    parser.add_argument(
-        "--safety_only",
-        action="store_true",
-        default=False,
-        help="Exclude skills where safety_flag is True.",
     )
     parser.add_argument(
         "--json",
@@ -394,7 +388,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         propose_n=args.propose,
         platforms=args.platforms,
         sources=args.sources,
-        safety_only=args.safety_only,
     )
 
     # Format and print
