@@ -351,3 +351,13 @@ class TestNormalize:
             assert not url.endswith(".git")
             assert not url.endswith("/")
             assert url == url.lower()
+
+    def test_is_official_not_in_output_metadata(self, tmp_raw_dir, tmp_path):
+        """is_official is a pipeline-internal flag and must be stripped from output records."""
+        output = str(tmp_path / "out.jsonl")
+        normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output)
+        for line in open(output):
+            record = json.loads(line)
+            assert "is_official" not in record, (
+                f"is_official should be stripped from output but found in: {record.get('name')}"
+            )
