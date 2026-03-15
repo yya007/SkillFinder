@@ -172,6 +172,7 @@ def write_version_txt(
     skill_count: int,
     index_sha256: str,
     metadata_sha256: str,
+    embed_model: str = "",
 ) -> None:
     """Write a YAML-like version manifest to *path*.
 
@@ -187,10 +188,15 @@ def write_version_txt(
         Hex digest of the ``.faiss`` file.
     metadata_sha256:
         Hex digest of the ``metadata.jsonl`` file.
+    embed_model:
+        Ollama model identifier used to build the embeddings (e.g.
+        ``"qwen3-embedding:0.6b"``).  Stored so incremental updates can
+        detect embedding-space mismatches before appending vectors.
     """
     content = (
         f"date: {date}\n"
         f"skill_count: {skill_count}\n"
+        f"embed_model: {embed_model}\n"
         f"index_sha256: {index_sha256}\n"
         f"metadata_sha256: {metadata_sha256}\n"
     )
@@ -252,6 +258,7 @@ def run_build_index(
     output_metadata: str,
     output_version: str,
     date: Optional[str] = None,
+    embed_model: str = "",
 ) -> dict:
     """Full build pipeline: load → normalise → index → write artefacts.
 
@@ -335,6 +342,7 @@ def run_build_index(
         skill_count=len(skills),
         index_sha256=index_sha256,
         metadata_sha256=metadata_sha256,
+        embed_model=embed_model,
     )
 
     return {
@@ -363,6 +371,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--out-meta", required=True, help="Output path for metadata.jsonl")
     parser.add_argument("--out-version", required=True, help="Output path for version.txt")
     parser.add_argument("--date", default=None, help="Build date (ISO-8601); defaults to today")
+    parser.add_argument(
+        "--embed-model",
+        default="",
+        metavar="MODEL",
+        help="Ollama model used to build embeddings (e.g. qwen3-embedding:0.6b). "
+             "Stored in version.txt to guard against incremental mismatches.",
+    )
     return parser.parse_args()
 
 
@@ -375,6 +390,7 @@ if __name__ == "__main__":
         output_metadata=args.out_meta,
         output_version=args.out_version,
         date=args.date,
+        embed_model=args.embed_model,
     )
     print(f"Build complete: {result['skill_count']} skills indexed.")
     print(f"  index_sha256:    {result['index_sha256']}")

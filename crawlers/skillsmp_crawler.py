@@ -2,8 +2,11 @@
 crawlers/skillsmp_crawler.py — GitHub Code Search crawler for SkillsMP.
 
 Strategy: Use GitHub Code Search API to find repos that contain a SKILL.md
-file.  Because the API caps results at 1,000 per query, we shard by pushed-
-date ranges so that no single shard exceeds the cap.
+file.  Because the API hard-caps results at 1,000 per query, we shard across
+two orthogonal dimensions — file size and repo star count — so that each of
+the 16 resulting cells stays well under the cap.  An overflow warning is
+logged whenever a cell's total_count still hits 1,000, indicating that cell
+may need finer subdivision in a future release.
 
 Output: data/raw/skillsmp.jsonl (one JSON record per line)
 
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import itertools
 import logging
 import os
 import re
@@ -47,15 +51,35 @@ logger = logging.getLogger(__name__)
 # Base search query — finds files named SKILL.md.
 _BASE_QUERY = "filename:SKILL.md"
 
-# File-size shards to bypass GitHub Code Search's 1000-result hard cap.
-# Each shard covers a disjoint byte range of SKILL.md files; combining all
-# four shards collects the full result set without hitting the cap.
+# ---------------------------------------------------------------------------
+# Two-dimensional sharding to stay under GitHub Code Search's 1,000-result
+# hard cap.  Each (size, stars) pair forms a disjoint query cell; the
+# cross-product gives 16 cells with a theoretical maximum of 16,000 results.
+#
+# If any cell still reports total_count >= 1,000 at runtime, a WARNING is
+# logged — that cell needs finer subdivision in the next release.
+# ---------------------------------------------------------------------------
+
+# Primary axis: SKILL.md file size in bytes.
 SIZE_SHARDS = [
     "size:1..500",
     "size:501..2000",
     "size:2001..10000",
     "size:>10000",
 ]
+
+# Secondary axis: repo star count.
+# Zero-star repos are separated into their own bucket because they make up the
+# majority of GitHub repos and would dominate a combined "stars:0..10" cell.
+STAR_SHARDS = [
+    "stars:0",
+    "stars:1..10",
+    "stars:11..100",
+    "stars:>100",
+]
+
+# Threshold at which we warn that a cell may be truncated.
+_OVERFLOW_THRESHOLD = 950
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +173,17 @@ def search_skill_repos(
 
         total_count = data.get("total_count", 0)
         logger.debug("Page %d: %d items (total_count=%d)", page, len(items), total_count)
+
+        # Warn on first page if this cell is at or near the hard cap — results
+        # beyond position 1,000 are silently dropped by GitHub regardless of
+        # pagination.  Finer sharding is needed for the flagged cell.
+        if page == 1 and total_count >= _OVERFLOW_THRESHOLD:
+            logger.warning(
+                "Shard overflow detected (total_count=%d >= %d) for query %r. "
+                "Results are capped at 1,000; consider adding finer shards.",
+                total_count, _OVERFLOW_THRESHOLD, query,
+            )
+
         if page * per_page >= total_count:
             break
 
@@ -332,7 +367,14 @@ def run(
     batch_size = 50
     written = 0
 
-    for shard in SIZE_SHARDS:
+    shard_cells = list(itertools.product(SIZE_SHARDS, STAR_SHARDS))
+    logger.info(
+        "Starting crawl: %d shard cells (%d size × %d star buckets)",
+        len(shard_cells), len(SIZE_SHARDS), len(STAR_SHARDS),
+    )
+
+    for size_shard, star_shard in shard_cells:
+        shard = f"{size_shard} {star_shard}"
         logger.info("Searching shard: %s", shard)
         for item in search_skill_repos(
             session, query_extra=shard, per_page=30, limit=limit, since=since
@@ -404,7 +446,7 @@ def run(
                 written += write_jsonl(batch, output_path, append=(written > 0 or resume))
                 batch = []
 
-        # After each shard, flush any accumulated batch before moving to next shard
+        # After each cell, flush any accumulated batch before moving to next cell
         if batch:
             written += write_jsonl(batch, output_path, append=(written > 0 or resume))
             batch = []

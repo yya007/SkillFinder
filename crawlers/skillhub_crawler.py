@@ -20,7 +20,6 @@ import logging
 import re
 import sys
 import time
-from typing import Iterator
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urljoin, urlparse
 
