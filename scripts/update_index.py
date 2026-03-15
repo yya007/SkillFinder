@@ -1,282 +1,327 @@
 """
-scripts/update_index.py — Download and apply the latest pre-built SkillFinder index.
+scripts/update_index.py — Pull the latest SkillFinder index release.
 
-Checks GitHub Releases for a newer index artifact, downloads it, verifies the
-SHA256 checksum, and atomically extracts it into the local data/ directory.
+Downloads the pre-built FAISS index from the latest GitHub Release and
+extracts it into the local data/ directory atomically.
 
 Usage:
-    python scripts/update_index.py           # update if newer available
-    python scripts/update_index.py --check   # check only, no download
-    python scripts/update_index.py --force   # force download even if current
+    python scripts/update_index.py              # update if newer available
+    python scripts/update_index.py --check      # report status, no download
+    python scripts/update_index.py --force      # download even if up to date
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import re
 import shutil
 import sys
 import tarfile
 import tempfile
-from datetime import datetime
+from datetime import date
+from pathlib import Path
 from typing import Optional
 
 import requests
 
-REPO = "yya007/skill-finder"
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+REPO = "yya007/SkillFinder"
 GITHUB_API = "https://api.github.com"
+RELEASE_URL = f"{GITHUB_API}/repos/{REPO}/releases/latest"
+_DEFAULT_DATA_DIR = str(Path(__file__).parent / ".." / "data")
 
-_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def read_local_version(data_dir: str) -> Optional[str]:
-    """Read the local index date from version.txt.
+    """Read the local index date from data_dir/version.txt.
 
-    Returns the date string (YYYY-MM-DD) or None if version.txt is missing.
-    Raises ValueError if version.txt exists but contains no valid 'date:' field.
+    Returns the date string "YYYY-MM-DD", or None if version.txt is absent.
+    Raises ValueError if version.txt exists but lacks a valid ``date:`` field.
     """
-    version_path = os.path.join(data_dir, "version.txt")
-    if not os.path.exists(version_path):
+    version_path = Path(data_dir) / "version.txt"
+    if not version_path.exists():
         return None
 
-    with open(version_path) as f:
-        for line in f:
-            if line.startswith("date:"):
-                date_str = line.split(":", 1)[1].strip()
-                try:
-                    datetime.strptime(date_str, "%Y-%m-%d")
-                except ValueError:
-                    raise ValueError(
-                        f"Invalid date format in version.txt: {date_str!r}. Expected YYYY-MM-DD."
-                    )
-                return date_str
+    content = version_path.read_text(encoding="utf-8")
+    for line in content.splitlines():
+        if line.startswith("date:"):
+            raw = line.split(":", 1)[1].strip()
+            # Validate format YYYY-MM-DD
+            try:
+                date.fromisoformat(raw)
+            except ValueError:
+                raise ValueError(
+                    f"version.txt contains an invalid date: {raw!r}. Expected YYYY-MM-DD."
+                )
+            return raw
 
-    raise ValueError("version.txt exists but contains no 'date:' field.")
-
-
-def get_latest_release(repo: str = REPO) -> dict:
-    """Fetch the latest GitHub Release for *repo*.
-
-    Returns the raw GitHub API release dict.
-    Raises RuntimeError on HTTP errors.
-    """
-    url = f"{GITHUB_API}/repos/{repo}/releases/latest"
-    resp = requests.get(
-        url,
-        timeout=30,
-        headers={"Accept": "application/vnd.github+json"},
+    raise ValueError(
+        "version.txt exists but has no 'date:' field. "
+        "Run a full re-install or delete data/ and retry."
     )
+
+
+def get_latest_release() -> dict:
+    """Fetch the latest GitHub Release metadata for this repo.
+
+    Returns the full release dict (tag_name, assets, body, ...).
+    Raises RuntimeError on non-200 responses.
+    """
+    try:
+        resp = requests.get(
+            RELEASE_URL,
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to reach GitHub API: {exc}") from exc
+
     if resp.status_code != 200:
         raise RuntimeError(
-            f"GitHub API error {resp.status_code} for {url}: {resp.text[:200]}"
+            f"GitHub API returned {resp.status_code}: {resp.text[:200]}"
         )
     return resp.json()
 
 
 def needs_update(local_version: Optional[str], tag_name: str) -> bool:
-    """Return True if *tag_name* is newer than *local_version*.
+    """Return True if the release tag is newer than the local index.
 
-    local_version: "YYYY-MM-DD" or None (None always returns True)
-    tag_name:      "index-YYYYMMDD" or plain "YYYYMMDD"
+    Args:
+        local_version: Local date string "YYYY-MM-DD", or None (no index).
+        tag_name:      GitHub tag, e.g. "index-20260310" or "20260310".
+
+    Returns:
+        True if an update should be downloaded.
     """
     if local_version is None:
         return True
 
-    date_part = tag_name.removeprefix("index-")
+    # Extract YYYYMMDD from tag (strip "index-" prefix if present)
+    raw = tag_name.removeprefix("index-").replace("-", "")
+    if len(raw) != 8 or not raw.isdigit():
+        # Unknown tag format — assume update needed
+        return True
+
+    release_date_str = f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
     try:
-        tag_date = datetime.strptime(date_part, "%Y%m%d").date()
-        local_date = datetime.strptime(local_version, "%Y-%m-%d").date()
+        release_date = date.fromisoformat(release_date_str)
+        local_date = date.fromisoformat(local_version)
     except ValueError:
-        raise ValueError(
-            f"Cannot parse date from release tag {tag_name!r}. "
-            "Expected format: 'index-YYYYMMDD'. "
-            "Check the release tagging process or use --force to bypass."
-        )
+        return True
 
-    return tag_date > local_date
-
-
-def verify_sha256(file_path: str, expected_hash: str) -> bool:
-    """Verify the SHA256 of *file_path* against *expected_hash*.
-
-    Comparison is case-insensitive.
-    Raises FileNotFoundError if the file does not exist.
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    sha256 = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest().lower() == expected_hash.lower()
-
-
-def download_file(url: str, dest_path: str) -> None:
-    """Download *url* to *dest_path* using chunked streaming.
-
-    Raises RuntimeError on non-200 responses.
-    """
-    resp = requests.get(url, stream=True, timeout=300)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Download failed (HTTP {resp.status_code}): {url}")
-
-    with open(dest_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                f.write(chunk)
-
-
-def extract_artifact(tar_path: str, data_dir: str) -> None:
-    """Extract the index tarball into *data_dir* atomically.
-
-    Extracts to a ``data_dir/.new/`` staging directory first, then moves each
-    file into place — no partial writes to the live data/ directory.
-    Cleans up the staging dir on success or failure.
-
-    Only index.faiss, metadata.jsonl, and version.txt are extracted (path
-    traversal attempts are silently skipped).
-    """
-    staging = os.path.join(data_dir, ".new")
-    if os.path.exists(staging):
-        shutil.rmtree(staging)
-    os.makedirs(staging, exist_ok=True)
-
-    safe_names = {"index.faiss", "metadata.jsonl", "version.txt"}
-    try:
-        with tarfile.open(tar_path, "r:gz") as tar:
-            for member in tar.getmembers():
-                name = os.path.basename(member.name)
-                if name not in safe_names:
-                    continue
-                extracted = tar.extractfile(member)
-                if extracted is not None:
-                    dest = os.path.join(staging, name)
-                    with open(dest, "wb") as out:
-                        out.write(extracted.read())
-
-        # Move files atomically from staging into data_dir
-        for name in safe_names:
-            src = os.path.join(staging, name)
-            dst = os.path.join(data_dir, name)
-            if os.path.exists(src):
-                shutil.move(src, dst)
-
-        # Verify all required files are now present; partial extraction is worse than no update
-        missing = [name for name in safe_names if not os.path.exists(os.path.join(data_dir, name))]
-        if missing:
-            raise RuntimeError(
-                f"Extraction incomplete — missing required file(s): {', '.join(sorted(missing))}. "
-                "The release artifact may be corrupt. Run update_index.py again to retry."
-            )
-    finally:
-        if os.path.exists(staging):
-            shutil.rmtree(staging)
+    return release_date > local_date
 
 
 def parse_release_sha256(body: str) -> Optional[str]:
-    """Extract a SHA256 hex string from a GitHub Release body.
+    """Extract the SHA256 checksum from a GitHub Release body.
 
-    Recognises:
-      **SHA256:** `abc123...`
-      SHA256: abc123...
+    Looks for patterns like:
+        **SHA256:** `abc123def456`
+        SHA256: abc123def456
 
-    Returns the hash string or None if not found.
+    Returns the hex string, or None if not found.
     """
-    m = re.search(r"\*\*SHA256:\*\*\s*`([a-fA-F0-9]+)`", body)
+    if not body:
+        return None
+    # Try bold/backtick style first: **SHA256:** `<hash>`
+    m = re.search(r"\*\*SHA256:\*\*\s*`([0-9a-fA-F]+)`", body)
     if m:
         return m.group(1)
-    m = re.search(r"SHA256:\s*([a-fA-F0-9]+)", body)
+    # Plain style: SHA256: <hash>
+    m = re.search(r"SHA256:\s*([0-9a-fA-F]{8,})", body)
     if m:
         return m.group(1)
     return None
 
 
+def verify_sha256(path: str, expected: str) -> bool:
+    """Verify the SHA256 checksum of a file.
+
+    Args:
+        path:     Path to the file to verify.
+        expected: Expected hex digest (case-insensitive).
+
+    Returns:
+        True if the checksum matches, False otherwise.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+    """
+    sha = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            sha.update(chunk)
+    return sha.hexdigest().lower() == expected.lower()
+
+
+def download_file(url: str, dest: str) -> None:
+    """Download a file from url and write it to dest.
+
+    Raises:
+        RuntimeError: If the HTTP response is not 200.
+        requests.RequestException: On network errors.
+    """
+    resp = requests.get(url, stream=True, timeout=120)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Download failed (HTTP {resp.status_code}) from {url}"
+        )
+    with Path(dest).open("wb") as fh:
+        for chunk in resp.iter_content(chunk_size=65536):
+            fh.write(chunk)
+
+
+def extract_artifact(tar_path: str, data_dir: str) -> None:
+    """Extract a tar.gz index artifact into data_dir atomically.
+
+    Extracts to a temporary ``data_dir/.new/`` staging directory first,
+    then moves each file into place.  No partial writes are visible to
+    readers, and ``.new/`` is always removed on completion.
+
+    Args:
+        tar_path: Path to the downloaded .tar.gz file.
+        data_dir: Destination directory (created if absent).
+    """
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    staging = data_path / ".new"
+
+    # Clean up any leftover staging dir from a previous failed run
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+
+    try:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            # Extract only safe members (no absolute paths, no ../  traversal)
+            for member in tar.getmembers():
+                member_path = Path(member.name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    continue
+                # Extract flat: strip any directory prefix, put files at staging root
+                member.name = member_path.name
+                tar.extract(member, path=staging, filter="data")
+
+        # Verify required index files were extracted
+        required = {"index.faiss", "metadata.jsonl", "version.txt"}
+        extracted = {f.name for f in staging.iterdir()}
+        missing = required - extracted
+        if missing:
+            raise RuntimeError(
+                f"Extraction incomplete — missing: {', '.join(sorted(missing))}. "
+                "The release artifact may be corrupt."
+            )
+
+        # Move staged files into data_dir
+        for staged_file in staging.iterdir():
+            staged_file.replace(data_path / staged_file.name)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
 def run_update(
-    data_dir: str = _DATA_DIR,
+    data_dir: str = _DEFAULT_DATA_DIR,
     check_only: bool = False,
     force: bool = False,
 ) -> dict:
-    """Orchestrate the update process.
+    """Orchestrate an index update end to end.
 
-    Returns dict with keys:
-      - "status":  "up_to_date" | "update_available" | "updated" | "error"
-      - "message": human-readable description
+    Args:
+        data_dir:   Directory containing (or to receive) index files.
+        check_only: If True, report status without downloading anything.
+        force:      If True, download even if the local index is current.
+
+    Returns:
+        Dict with "status" ("up_to_date" | "update_available" | "updated" | "error")
+        and "message".
     """
     try:
-        release = get_latest_release()
-        tag_name = release["tag_name"]
         local_version = read_local_version(data_dir)
-
-        if not force and not needs_update(local_version, tag_name):
-            return {
-                "status": "up_to_date",
-                "message": f"Index is current ({local_version}). Latest: {tag_name}.",
-            }
-
-        if check_only:
-            return {
-                "status": "update_available",
-                "message": f"Update available: {tag_name} (local: {local_version}).",
-            }
-
-        # Locate the .tar.gz asset
-        assets = release.get("assets", [])
-        tar_assets = [a for a in assets if a["name"].endswith(".tar.gz")]
-        if not tar_assets:
-            return {
-                "status": "error",
-                "message": "No .tar.gz asset found in the latest release.",
-            }
-
-        asset = tar_assets[0]
-        download_url = asset["browser_download_url"]
-
-        # Download to a temp file, then verify + extract
-        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            size_mb = asset.get("size", 0) // 1_000_000
-            print(f"Downloading {asset['name']} ({size_mb} MB)...")
-            download_file(download_url, tmp_path)
-
-            expected_sha = parse_release_sha256(release.get("body", ""))
-            if not expected_sha and not force:
-                raise RuntimeError(
-                    "SHA256 checksum not found in release body. "
-                    "The release artifact cannot be verified and will not be installed. "
-                    "Use --force to bypass (not recommended)."
-                )
-            if expected_sha:
-                print("Verifying SHA256...")
-            if not verify_sha256(tmp_path, expected_sha):
-                return {
-                    "status": "error",
-                    "message": "SHA256 verification failed. Download may be corrupt or tampered.",
-                }
-
-            print(f"Extracting to {data_dir}...")
-            os.makedirs(data_dir, exist_ok=True)
-            extract_artifact(tmp_path, data_dir)
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-        return {
-            "status": "updated",
-            "message": f"Successfully updated to {tag_name}.",
-        }
-
-    except Exception as exc:
+    except ValueError as exc:
         return {"status": "error", "message": str(exc)}
 
+    try:
+        release = get_latest_release()
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
 
-def main(argv: Optional[list[str]] = None) -> int:
+    tag = release.get("tag_name", "")
+
+    if not force and not needs_update(local_version, tag):
+        return {
+            "status": "up_to_date",
+            "message": f"Local index ({local_version}) matches latest release ({tag}).",
+        }
+
+    if check_only:
+        return {
+            "status": "update_available",
+            "message": f"New release available: {tag} (local: {local_version}).",
+        }
+
+    # Find the tar.gz asset
+    assets = release.get("assets", [])
+    tar_asset = next(
+        (a for a in assets if a.get("name", "").endswith(".tar.gz")), None
+    )
+    if not tar_asset:
+        return {
+            "status": "error",
+            "message": f"No .tar.gz asset found in release {tag}.",
+        }
+
+    url = tar_asset["browser_download_url"]
+    expected_sha = parse_release_sha256(release.get("body", ""))
+    if not expected_sha and not force:
+        return {
+            "status": "error",
+            "message": (
+                "SHA256 checksum not found in release body — cannot verify download. "
+                "Use --force to bypass (not recommended)."
+            ),
+        }
+
+    # Download to a temp file
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        download_file(url, tmp_path)
+
+        if expected_sha and not verify_sha256(tmp_path, expected_sha):
+            return {
+                "status": "error",
+                "message": "SHA256 checksum mismatch — download may be corrupt.",
+            }
+
+        extract_artifact(tmp_path, data_dir)
+    except (OSError, RuntimeError, requests.RequestException) as exc:
+        return {"status": "error", "message": str(exc)}
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    return {
+        "status": "updated",
+        "message": f"Index updated to {tag}.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download the latest SkillFinder index from GitHub Releases."
+        description="Download the latest SkillFinder index from GitHub Releases.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--check",
@@ -286,19 +331,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force download even if the local index is already current.",
+        help="Force download even if local index is current.",
     )
     parser.add_argument(
         "--data",
-        default=_DATA_DIR,
-        metavar="DATA_DIR",
-        help="Path to data directory (default: ../data relative to this script).",
+        default=_DEFAULT_DATA_DIR,
+        metavar="DIR",
+        help="Path to the data directory (default: data/ next to this script).",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
 
-    result = run_update(data_dir=args.data, check_only=args.check, force=args.force)
-    print(result["message"])
-    return 1 if result["status"] == "error" else 0
+
+def main(argv=None) -> int:
+    args = _parse_args(argv)
+    result = run_update(
+        data_dir=args.data,
+        check_only=args.check,
+        force=args.force,
+    )
+    status = result.get("status", "error")
+    msg = result.get("message", "")
+    print(f"[{status}] {msg}")
+    return 0 if status in ("up_to_date", "updated", "update_available") else 1
 
 
 if __name__ == "__main__":
