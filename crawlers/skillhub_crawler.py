@@ -79,9 +79,9 @@ def _parse_frontmatter(content: str) -> dict:
         return {}
 
 
-def _fetch_skill_md(session, repo_full_name: str, default_branch: str = "main") -> str | None:
-    """Fetch raw SKILL.md content from the root of a GitHub repo via GitHub API."""
-    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/SKILL.md"
+def _fetch_skill_md(session, repo_full_name: str, path: str = "SKILL.md", default_branch: str = "main") -> str | None:
+    """Fetch raw SKILL.md content from a GitHub repo via GitHub API."""
+    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
     try:
         resp = session.get(url, params={"ref": default_branch}, timeout=30)
     except Exception as exc:
@@ -290,7 +290,10 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
     # --- overall score ---
     overall_score: float = 0.0
     score_tag = soup.find(
-        class_=lambda c: c and ("overall" in c.lower() or "score" in c.lower()) if c else False
+        class_=lambda c: c and any(
+            "overall" in cls.lower() or "score" in cls.lower()
+            for cls in (c if isinstance(c, list) else [c])
+        ) if c else False
     )
     if score_tag:
         score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", score_tag.get_text())
@@ -472,7 +475,7 @@ def scrape_skill_listing(
             # Check filter cache before making GitHub API calls
             if github_url and github_url in filter_cache:
                 log.debug("Skipping %s: in filter cache", github_url)
-                github_url = ""  # treat as missing so we still emit a record
+                continue
 
             if github_url and github_session:
                 full_name = github_url.removeprefix("https://github.com/")
@@ -494,7 +497,7 @@ def scrape_skill_listing(
                 if skill_path:
                     skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
                     skill_content = _fetch_skill_md(
-                        github_session, full_name, default_branch
+                        github_session, full_name, path=skill_path, default_branch=default_branch
                     )
                     if skill_content:
                         fm = _parse_frontmatter(skill_content)

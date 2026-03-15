@@ -381,8 +381,7 @@ def run(
         try:
             from pathlib import Path as _Path
             import json as _json
-            existing_text = _Path(output_path).read_text(encoding="utf-8")
-            for line in existing_text.splitlines():
+            for line in _Path(output_path).open(encoding="utf-8", errors="replace"):
                 line = line.strip()
                 if not line:
                     continue
@@ -393,7 +392,7 @@ def run(
                     seen_paths.add(key)
                 except Exception:
                     pass
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             pass
         logger.info("Resume mode: %d skills already in output", len(seen_paths))
 

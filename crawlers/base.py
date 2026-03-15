@@ -124,9 +124,6 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             logger.warning("Network error on %s: %s", url, exc)
             continue
 
-        # Proactive rate-limit check on every response
-        _maybe_wait_for_reset(resp)
-
         # Rate-limit responses (429/403 with quota exhausted): sleep until reset
         # and retry immediately without consuming a backoff attempt slot.
         while resp.status_code in (429, 403):
@@ -139,9 +136,17 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
                     last_exc = exc
                     break
             else:
-                break
+                # 403 with quota remaining = permanent error (private repo,
+                # bad token, org restriction). Raise immediately — no point
+                # burning backoff retries on a definitive access denial.
+                raise RuntimeError(
+                    f"Permanent 403 from {url}: {resp.text[:200]}"
+                )
 
         if resp.status_code == 200:
+            # Proactive check: if remaining quota is critically low, sleep
+            # before returning so the *next* call doesn't hit the wall.
+            _maybe_wait_for_reset(resp)
             try:
                 return resp.json()
             except ValueError as exc:

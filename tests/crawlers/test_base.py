@@ -253,7 +253,7 @@ class TestFindSkillMdPaths:
             {"path": "skills/b/SKILL.md"},
         ]
         with patch("crawlers.base.github_get") as mock_get, \
-             patch("crawlers.base.time"):
+             patch("time.sleep"):
             mock_get.return_value = {"items": items_with_dup, "total_count": 3}
             paths = _find_skill_md_via_search(mock_session, "user/repo")
 

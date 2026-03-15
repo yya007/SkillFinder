@@ -137,7 +137,7 @@ class TestGithubUrlDedup:
         normalize([str(f1), str(f2)], str(tmp_path / "out.jsonl"))
         record = json.loads((tmp_path / "out.jsonl").read_text().strip())
         # Stars should be the maximum across both records
-        assert record["quality"]["stars"] >= 10
+        assert record["quality"]["stars"] == 200
 
     def test_case_insensitive_url_deduplication(self, tmp_path):
         """URLs differing only in case should dedup to the same record."""
