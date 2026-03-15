@@ -119,6 +119,26 @@ class TestEnsureOllama:
                 msg = str(exc_info.value).lower()
                 assert "install" in msg or "ollama.com" in msg
 
+    def test_ensure_ollama_returns_popen_when_started(self):
+        """Ollama not running → starts it, returns the Popen object."""
+        import subprocess as _subprocess
+        mock_proc = MagicMock(spec=_subprocess.Popen)
+        # First call to requests.get (is_ollama_running check) raises → not running
+        # Second call (inside the wait loop) succeeds → Ollama ready
+        call_count = {"n": 0}
+
+        def mock_get(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise Exception("connection refused")
+            return MagicMock(status_code=200)
+
+        with patch("requests.get", side_effect=mock_get):
+            with patch("subprocess.Popen", return_value=mock_proc):
+                result = ensure_ollama()
+
+        assert result is mock_proc
+
 
 # ---------------------------------------------------------------------------
 # load_index

@@ -314,3 +314,91 @@ class TestRunUpdate:
             result = run_update(str(tmp_data_dir))
         assert "status" in result
         assert "message" in result
+
+    def test_sha_mismatch_returns_error(self, tmp_path):
+        """verify_sha256 returns False → status == 'error'."""
+        with patch("scripts.update_index.get_latest_release", return_value=self._mock_release()):
+            with patch("scripts.update_index.download_file"):
+                with patch("scripts.update_index.verify_sha256", return_value=False):
+                    result = run_update(str(tmp_path))
+        assert result["status"] == "error"
+        assert "checksum" in result["message"].lower() or "sha" in result["message"].lower()
+
+    def test_no_tar_gz_asset_returns_error(self, tmp_path):
+        """Release with no .tar.gz asset → status == 'error'."""
+        release = self._mock_release()
+        release["assets"] = [{"name": "skill-finder.zip", "browser_download_url": "https://example.com/x.zip", "size": 100}]
+        with patch("scripts.update_index.get_latest_release", return_value=release):
+            result = run_update(str(tmp_path))
+        assert result["status"] == "error"
+        assert "tar.gz" in result["message"].lower() or "asset" in result["message"].lower()
+
+    def test_check_only_returns_update_available(self, tmp_path):
+        """check_only=True with newer release → status == 'update_available', no download."""
+        with patch("scripts.update_index.get_latest_release", return_value=self._mock_release()):
+            with patch("scripts.update_index.download_file") as mock_dl:
+                result = run_update(str(tmp_path), check_only=True)
+        assert result["status"] == "update_available"
+        mock_dl.assert_not_called()
+
+    def test_extraction_path_traversal_rejected(self, tmp_path):
+        """Tar member with ../etc/passwd path is silently skipped, not extracted."""
+        import io
+        import tarfile
+
+        # Build a tar.gz containing a safe file and a path-traversal file
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            # Safe member
+            safe_content = b"date: 2026-03-10\nskill_count: 1\nindex_sha256: a\nmetadata_sha256: b\n"
+            info = tarfile.TarInfo(name="version.txt")
+            info.size = len(safe_content)
+            tar.addfile(info, io.BytesIO(safe_content))
+            # Safe faiss stub
+            faiss_content = b"fake"
+            fi = tarfile.TarInfo(name="index.faiss")
+            fi.size = len(faiss_content)
+            tar.addfile(fi, io.BytesIO(faiss_content))
+            # Safe metadata stub
+            meta_content = b'{"name": "x"}\n'
+            mi = tarfile.TarInfo(name="metadata.jsonl")
+            mi.size = len(meta_content)
+            tar.addfile(mi, io.BytesIO(meta_content))
+            # Malicious path-traversal member
+            evil_content = b"evil"
+            evil = tarfile.TarInfo(name="../etc/passwd")
+            evil.size = len(evil_content)
+            tar.addfile(evil, io.BytesIO(evil_content))
+
+        tar_bytes = buf.getvalue()
+        tar_path = tmp_path / "artifact.tar.gz"
+        tar_path.write_bytes(tar_bytes)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        from scripts.update_index import extract_artifact
+        extract_artifact(str(tar_path), str(data_dir))
+
+        # The traversal target must NOT exist
+        assert not (tmp_path / "etc" / "passwd").exists()
+        assert not (tmp_path.parent / "etc" / "passwd").exists()
+
+    def test_sha256_missing_without_force_returns_error(self, tmp_path):
+        """Release body without SHA256, force=False → status == 'error' with --force hint."""
+        release = self._mock_release()
+        release["body"] = "**Skills indexed:** 14823\nNo checksum here."
+        with patch("scripts.update_index.get_latest_release", return_value=release):
+            result = run_update(str(tmp_path), force=False)
+        assert result["status"] == "error"
+        assert "--force" in result["message"] or "force" in result["message"].lower()
+
+    def test_sha256_missing_with_force_proceeds(self, tmp_path):
+        """Release body without SHA256, force=True → proceeds to download (no early error)."""
+        release = self._mock_release()
+        release["body"] = "**Skills indexed:** 14823\nNo checksum here."
+        with patch("scripts.update_index.get_latest_release", return_value=release):
+            with patch("scripts.update_index.download_file"):
+                with patch("scripts.update_index.extract_artifact"):
+                    result = run_update(str(tmp_path), force=True)
+        # Should not have returned an error about missing SHA256
+        assert result["status"] != "error" or "sha" not in result["message"].lower()
