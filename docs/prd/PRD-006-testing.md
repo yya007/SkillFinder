@@ -2,15 +2,21 @@
 
 ## Status: Active
 
-## Problem
+---
 
-The test suite had three blocking gaps:
+## Overview
 
-1. **Merge conflicts in `scripts/search.py`** — git conflict markers caused a `SyntaxError` at import time, blocking all tests that depend on the search module (unit + integration).
-2. **Missing `scripts/update_index.py`** — 32 tests in `test_update_index.py` could never run; the script existed only in a branch but was never merged to `main`.
-3. **`pythonpath` not set in `pytest.ini`** — pytest could not resolve `from scripts.update_index import ...` even once the file existed, because the project root was not on `sys.path`.
+SkillFinder maintains a layered test suite that covers the full pipeline — from crawlers through
+normalization, embedding, index build, and search — using only local tools (no network, no Ollama)
+in the standard `pytest` run.
 
-After fixes: **350 tests pass, 0 failures** (20 deselected: `quality` and `network` marks require Ollama + real index).
+Tests are organized into three categories:
+
+- **Unit tests** (`tests/unit/`): pure-logic tests, all external I/O patched.
+- **Crawler tests** (`tests/crawlers/`): crawler modules with GitHub API calls mocked.
+- **Integration tests** (`tests/integration/`): end-to-end pipeline with a tiny in-memory FAISS index.
+- **Quality benchmarks** (`tests/quality/`): Recall@30 evaluation requiring a real index + Ollama
+  (excluded from CI).
 
 ---
 
@@ -20,18 +26,20 @@ After fixes: **350 tests pass, 0 failures** (20 deselected: `quality` and `netwo
 tests/
 ├── conftest.py                        # shared fixtures (make_skill, tmp_data_dir, mock_ollama_embed)
 ├── crawlers/
-│   ├── conftest.py
+│   ├── conftest.py                    # make_github_repo, mock_session, SAMPLE_SKILL_MD
 │   ├── test_base.py                   # URL normaliser, JSONL I/O, GitHub tree/search API, platform inference
 │   ├── test_clawhub_crawler.py        # awesome-list parsing, monorepo dedup
 │   ├── test_marketplace_crawler.py    # marketplace entry building, official skill marking
 │   ├── test_skillhub_crawler.py       # HTML scraping, rank/score extraction
 │   ├── test_skillsmp_crawler.py       # code-search sharding, filter cache, cross-shard dedup
+│   ├── test_skillsmp_deep_crawler.py  # state persistence, exhaustion logic, resume, early stop
 │   └── test_dedup_across_sources.py   # URL variant dedup, multi-source merge
 ├── unit/
 │   ├── test_normalize.py              # canonical_key, skill_id, build_embedding_text, quality filter
 │   ├── test_embed.py                  # Ollama health check, embed_batch, checkpoint writing
 │   ├── test_build_index.py            # L2 normalisation, IndexFlatIP vs IVFFlat, alignment check
 │   ├── test_fetch_skill.py            # GitHub URL parsing, SKILL.md candidate URLs, fallbacks
+│   ├── test_incremental_update.py     # model-mismatch guard, IVFFlat guard, append alignment
 │   ├── test_search.py                 # embed_query, load_index, apply_filters, format_results
 │   └── test_update_index.py           # read_local_version, needs_update, verify_sha256,
 │                                      # download_file, extract_artifact, parse_release_sha256, run_update
@@ -42,7 +50,45 @@ tests/
     └── test_search_quality.py         # Recall@30 ≥ 90% on 100-query labeled suite
 ```
 
-### Markers
+### Key fixtures
+
+| Fixture | File | Purpose |
+|---------|------|---------|
+| `make_skill(...)` | `conftest.py` | Build a fully-populated unified skill record |
+| `tmp_data_dir` | `conftest.py` | Temp directory with a tiny 3-skill FAISS index |
+| `mock_ollama_embed` | `conftest.py` | Deterministic embed_batch stub |
+| `mock_session` | `crawlers/conftest.py` | `MagicMock` session for crawler unit tests |
+| `make_github_repo(...)` | `crawlers/conftest.py` | Fake GitHub API repo dict |
+
+---
+
+## Running Tests
+
+```bash
+# Standard run — unit + crawler + integration (no Ollama, no network)
+pytest
+
+# Verbose with test names
+pytest -v
+
+# Run a specific file
+pytest tests/unit/test_incremental_update.py -v
+
+# Run all marks including network (requires GitHub token)
+pytest -m ""
+
+# Quality benchmark only (requires data/index.faiss + Ollama running)
+ollama pull qwen3-embedding:0.6b
+pytest tests/quality/ -v -m quality
+
+# Coverage report
+pytest --cov=scripts --cov=crawlers --cov=pipeline \
+       --cov-report=term-missing --cov-report=html
+```
+
+---
+
+## Markers
 
 | Marker | Default | Requires |
 |--------|---------|---------|
@@ -50,13 +96,6 @@ tests/
 | `slow` | Run | nothing |
 | `network` | **Skip** | real network |
 | `quality` | **Skip** | `data/index.faiss` + Ollama running |
-
-Run all including skipped:
-```bash
-pytest -m ""                              # all 370 tests
-pytest -m "not quality"                   # skip only quality benchmark
-pytest -m "quality" --no-header -q       # quality benchmark only
-```
 
 ---
 
@@ -70,92 +109,33 @@ pytest -m "quality" --no-header -q       # quality benchmark only
 | `crawlers/` | ≥ 80% | Crawlers are CI-only; happy path + rate-limit + dedup branches |
 | `pipeline/` | ≥ 80% | Normalize/embed/build — alignment invariant must be tested |
 
-Run coverage:
-```bash
-pytest --cov=scripts --cov=crawlers --cov=pipeline \
-       --cov-report=term-missing --cov-report=html
-```
-
 ---
 
-## Gap Analysis (as of PRD-006)
-
-### Covered
-- All `scripts/` modules: search filtering, Ollama lifecycle, update orchestration, fetch fallbacks
-- All crawler modules: URL normalisation, dedup, filter cache, rate-limit mock, cross-shard dedup
-- Pipeline: normalize → embed → build_index row-alignment invariant
-- Integration: tiny in-memory index built in `conftest.py`, exercised by search tests
-
-### Not yet covered (backlog)
+## Remaining Gaps
 
 | Gap | Risk | Suggested test |
 |-----|------|---------------|
-| `skillsmp_deep_crawler.py` state persistence | Medium | Write state, simulate resume, verify skipped cells |
-| `skillsmp_deep_crawler.py` overflow warning | Low | Mock `total_count >= 950`, assert WARNING logged |
-| `pipeline/incremental_update.py` | High | Embed-model mismatch → raises; append-then-reload alignment |
-| `pipeline/incremental_update.py` IVFFlat guard | High | Inject index with `ntotal >= IVF_THRESHOLD`, assert IncrementalError |
-| `scripts/update_index.py` SHA mismatch path | Medium | `verify_sha256` returns False → status == "error" |
-| `scripts/update_index.py` no tar.gz asset | Medium | Release body with only `.zip` asset → status == "error" |
+| `pipeline/incremental_update.py` — version.txt missing (no model check) | Low | Verify warning logged, update proceeds |
+| `crawlers/skillsmp_deep_crawler.py` — overflow WARNING log | Low | Mock `total_count >= 950`, assert WARNING emitted |
 | Multi-platform install path in `SKILL.md` | Low | Smoke-test the platform-default logic (needs agent harness) |
-
----
-
-## Implementation Plan
-
-### Phase 1 — Incremental update tests (priority: high)
-
-File: `tests/unit/test_incremental_update.py`
-
-Tests to add:
-- `test_embed_model_mismatch_raises` — version.txt reports different model, `IncrementalError` raised
-- `test_ivfflat_guard_raises` — inject index with `ntotal >= IVF_THRESHOLD`, assert `IncrementalError`
-- `test_append_preserves_alignment` — append 3 new skills, verify `index.ntotal == len(metadata_rows)`
-- `test_no_new_skills_is_noop` — all IDs already in index, `new_count == 0`, index unchanged
-
-### Phase 2 — Deep crawler tests (priority: medium)
-
-File: `tests/crawlers/test_skillsmp_deep_crawler.py`
-
-Tests to add:
-- `test_load_state_missing_file` — returns empty dict
-- `test_save_and_reload_state` — round-trip through JSON
-- `test_cell_marked_exhausted_when_under_threshold` — `date_shard_count < 950` → added to `exhausted_date_shards`
-- `test_cell_not_marked_exhausted_at_overflow` — `date_shard_count >= 950` → not exhausted
-- `test_resume_skips_exhausted_date_shards` — state file pre-loaded, exhausted shards produce no API calls
-- `test_target_reached_stops_early` — cell_new hits target mid-shard, remaining date shards skipped
-
-### Phase 3 — update_index edge cases (priority: medium)
-
-Extend `tests/unit/test_update_index.py`:
-- `test_sha_mismatch_returns_error` — patch `verify_sha256` → False, result status == "error"
-- `test_no_tar_gz_asset_returns_error` — release with no `.tar.gz` asset, status == "error"
-- `test_check_only_with_available_update` — returns status == "update_available", no download
-- `test_extraction_path_traversal_rejected` — tar member with `../` prefix is ignored
-
-### Phase 4 — Coverage enforcement in CI
-
-Add to `.github/workflows/update-index.yml`:
-```yaml
-- name: Run tests with coverage
-  run: |
-    pytest --cov=scripts --cov=crawlers --cov=pipeline \
-           --cov-fail-under=80 --cov-report=xml
-- name: Upload coverage
-  uses: codecov/codecov-action@v4
-```
 
 ---
 
 ## Quality Benchmark
 
-`tests/quality/test_search_quality.py` evaluates Recall@30 against 100 labeled queries in `tests/fixtures/test_queries.json`.
+`tests/quality/test_search_quality.py` evaluates Recall@30 against 100 labeled queries in
+`tests/fixtures/test_queries.json`.
 
-**Target:** Recall@30 ≥ 90% (the correct skill appears in the top-30 candidates for at least 90 of 100 queries).
+**Target:** Recall@30 ≥ 90% (the correct skill appears in the top-30 candidates for at least 90
+of 100 queries).
 
 Run manually (requires real index + Ollama):
+
 ```bash
 ollama pull qwen3-embedding:0.6b
 pytest tests/quality/ -v -m quality
 ```
 
-This benchmark is intentionally excluded from CI to avoid the Ollama dependency in the build pipeline. It should be run locally after any change to the embedding strategy, index build, or query prefix.
+This benchmark is intentionally excluded from CI to avoid the Ollama dependency in the build
+pipeline. It should be run locally after any change to the embedding strategy, index build, or
+query prefix.
