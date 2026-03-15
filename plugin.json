@@ -6,15 +6,16 @@
     "name": "yya007",
     "url": "https://github.com/yya007"
   },
-  "repository": "https://github.com/yya007/skill-finder",
+  "repository": "https://github.com/yya007/SkillFinder",
   "license": "MIT",
   "keywords": ["skills", "search", "discovery", "faiss", "vector-search"],
   "platforms": ["claude_code", "openclaw", "codex"],
   "install": {
     "steps": [
       "pip install -r scripts/requirements.txt",
+      "ollama pull qwen3-embedding:0.6b",
       "python scripts/update_index.py"
     ],
-    "note": "Requires Ollama running locally with qwen3-embedding:0.6b pulled."
+    "note": "Requires Ollama (https://ollama.com/install) to be installed first."
   }
 }

@@ -39,22 +39,16 @@ Want me to fetch the full SKILL.md for any of these before you install?
 ### Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.com/install) running locally with the embedding model pulled:
-
-  ```bash
-  ollama pull qwen3-embedding:0.6b
-  ```
+- [Ollama](https://ollama.com/install) installed locally
 
 ### Install
 
 **Claude Code**
 
 ```bash
-# Clone into your Claude Code skills directory
-git clone https://github.com/yya007/skill-finder ~/.claude/skills/skill-finder
-
-# Install runtime dependencies
+git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
 pip install -r ~/.claude/skills/skill-finder/scripts/requirements.txt
+ollama pull qwen3-embedding:0.6b
 ```
 
 The index is included in the repository. Just ask Claude: _"find a skill for X"_
@@ -66,16 +60,14 @@ Claude Code will auto-invoke SkillFinder when you ask to find or search for skil
 ```bash
 clawhub install skill-finder
 ollama pull qwen3-embedding:0.6b
-python ~/.openclaw/skills/skill-finder/scripts/update_index.py
 ```
 
 **Codex**
 
 ```bash
-git clone https://github.com/yya007/skill-finder ~/.codex/skills/skill-finder
+git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
 pip install -r ~/.codex/skills/skill-finder/scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
-python ~/.codex/skills/skill-finder/scripts/update_index.py
 ```
 
 ### Usage — natural language (recommended)
@@ -134,7 +126,7 @@ python scripts/update_index.py
 
 ## Why not just Google it?
 
-The [Agent Skills](https://agentskills.io) open standard (originally developed by Anthropic) is now supported by 30+ AI tools: Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and more. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
+The [Agent Skills](https://agentskills.io) open standard (originally developed by Anthropic) is now supported by Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and more. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
 
 **Searching the web manually:**
 
@@ -170,7 +162,7 @@ $ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
    [claude_code] /plugin install terraform-k8s
 ```
 
-Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included. The official Anthropic skills repo alone has 93,700+ stars — and SkillFinder indexes it alongside SkillsMP, ClawHub, and SkillHub automatically.
+Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included. SkillFinder indexes official Anthropic skills alongside SkillsMP, ClawHub, and SkillHub automatically.
 
 ---
 
@@ -186,8 +178,8 @@ Use this if you want to run the full crawl-embed-index pipeline locally, add a n
 ### Setup
 
 ```bash
-git clone https://github.com/yya007/skill-finder
-cd skill-finder
+git clone https://github.com/yya007/SkillFinder
+cd SkillFinder
 pip install -r requirements-dev.txt
 export GITHUB_TOKEN=ghp_your_token_here
 ```
