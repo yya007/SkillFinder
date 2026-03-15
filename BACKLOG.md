@@ -27,38 +27,28 @@ automated scanner. It has two gaps:
 ---
 
 ### SHA256 verification — force-bypass warning
-**Priority: medium** *(from review issue 6, now fixed)*
-`--force` skips SHA verification. Add a visible stderr warning when this path is
-taken so it isn't silently used in scripts.
+**Priority: medium** ✅ *resolved*
+Added stderr warning when `--force` bypasses SHA256 verification, so it is
+never silently used in scripts.
 
 **File:** `scripts/update_index.py`, `run_update()`.
 
 ---
 
 ### ClawHub install_cmd cross-platform bug
-**Priority: high**
-`pipeline/normalize.py` generates a `claude_code` install_cmd entry for ClawHub
-skills by mapping `/plugin install <name>` — but `/plugin install` is a SkillsMP
-command, not a ClawHub command. ClawHub skills use `clawhub install <name>`.
-This causes silent install failures when an agent blindly executes the command on
-a Claude Code platform.
-
-**Fix:** Update the ClawHub normalizer branch to emit `clawhub install <name>` for
-`openclaw` key; only emit `claude_code` key if the skill is also listed on SkillsMP.
+**Priority: high** ✅ *resolved*
+`pipeline/normalize.py` correctly emits `clawhub install <name>` under the
+`openclaw` key only; no `claude_code` entry is generated for ClawHub-only skills.
 
 **File:** `pipeline/normalize.py` (ClawHub normalization branch).
 
 ---
 
 ### STAR_SHARDS not exported from skillsmp_crawler
-**Priority: high** *(technical debt introduced during deep crawler work)*
-`crawlers/skillsmp_deep_crawler.py` defines its own copy of `STAR_SHARDS`,
-`SIZE_SHARDS`, and `_BASE_QUERY` because the linter kept reverting additions
-to `skillsmp_crawler.py`. This creates two sources of truth. If shards are
-updated in one file they must be manually synced to the other.
-
-**Fix:** Export `STAR_SHARDS`, `SIZE_SHARDS`, `_BASE_QUERY`, and `_OVERFLOW_THRESHOLD`
-from `skillsmp_crawler.py` and remove the duplicates from `skillsmp_deep_crawler.py`.
+**Priority: high** ✅ *resolved*
+`crawlers/skillsmp_deep_crawler.py` imports `STAR_SHARDS`, `SIZE_SHARDS`,
+`_BASE_QUERY`, and `_OVERFLOW_THRESHOLD` directly from `skillsmp_crawler.py` —
+no duplicate definitions.
 
 **Files:** `crawlers/skillsmp_crawler.py`, `crawlers/skillsmp_deep_crawler.py`.
 
@@ -86,15 +76,10 @@ Scope:
 ---
 
 ### Monorepo dedup collapse via skill_md_url
-**Priority: medium**
-Skills in monorepos (e.g. `anthropics/skills`) share a `repo_url`. The
-deduplication key is `sha256(canonical_repo_url)`, so only the first skill
-encountered per repo survives. Skills keyed on `skill_md_url` avoid this,
-but the normalizer does not consistently prefer `skill_md_url` for dedup.
-
-**Fix:** Use `sha256(skill_md_url)` as the primary ID when `skill_md_url` is
-present; fall back to `sha256(repo_url)` only when it is absent. Add a migration
-note to PRD-005 or CHANGELOG.
+**Priority: medium** ✅ *resolved*
+`pipeline/normalize.py` uses `sha256(skill_md_url)` as the dedup key when
+`skill_md_url` is present, falling back to `sha256(repo_url)` only when absent.
+Each skill in a monorepo gets a unique ID.
 
 **File:** `pipeline/normalize.py:379`, `docs/prd/PRD-005-ci-cd-release.md`.
 
@@ -145,9 +130,9 @@ period or explicit versioning for the ID scheme.
 ---
 
 ### Add progress output when auto-starting Ollama
-**Priority: medium** *(review issue 10)*
-`ensure_ollama()` polls silently for 10 seconds. Add a `print("Starting Ollama…")`
-before the loop and a confirmation when ready.
+**Priority: medium** ✅ *resolved*
+`ensure_ollama()` now prints "Starting Ollama..." before the wait loop and
+"Ollama ready." when it becomes available.
 
 **File:** `scripts/search.py`, `ensure_ollama()`.
 
@@ -184,23 +169,16 @@ incremental vs. full rebuild and when to use each.
 ## Testing
 
 ### Zero test coverage for skillsmp_deep_crawler
-**Priority: high**
-`crawlers/skillsmp_deep_crawler.py` has no unit or integration tests. Key
-scenarios not covered: state file creation and resume, date-shard exhaustion,
-per-cell overflow detection, `--cell` flag single-cell mode, atomic state save
-on error.
-
-**File:** `tests/test_deep_crawler.py` (new file needed).
+**Priority: high** ✅ *resolved*
+`tests/crawlers/test_skillsmp_deep_crawler.py` covers state persistence, resume,
+date-shard exhaustion logic, and early stop on target.
 
 ---
 
 ### Zero test coverage for incremental_update.py
-**Priority: medium**
-`pipeline/incremental_update.py` is exercised only indirectly. Add unit tests
-for `load_existing_ids()`, `find_new_skills()`, `merge_metadata()`, and the
-IVF_THRESHOLD blocking logic.
-
-**File:** `tests/test_incremental_update.py` (new file needed).
+**Priority: medium** ✅ *resolved*
+`tests/unit/test_incremental_update.py` covers `load_existing_ids`,
+`find_new_skills`, model-mismatch guard, IVFFlat guard, and append alignment.
 
 ---
 
@@ -216,11 +194,8 @@ logic can be tested in CI without network access.
 ---
 
 ### Missing edge-case coverage in test_update_index.py
-**Priority: medium**
-`tests/test_update_index.py` does not cover:
-- `read_local_version()` with malformed date string → should raise `ValueError`
-- `needs_update()` with unparseable tag → should raise `ValueError`
-- `extract_artifact()` with path-traversal member (e.g. `../../etc/passwd`)
-- `run_update()` with no `.tar.gz` asset in release
+**Priority: medium** ✅ *resolved*
+Added: SHA mismatch → `status=="error"`, no `.tar.gz` asset, `check_only` status,
+path traversal rejection, `--force` with/without SHA256.
 
 **File:** `tests/test_update_index.py`.

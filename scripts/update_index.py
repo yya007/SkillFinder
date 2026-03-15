@@ -288,6 +288,14 @@ def run_update(
                 "Use --force to bypass (not recommended)."
             ),
         }
+    if not expected_sha and force:
+        print(
+            "Warning: SHA256 checksum not found in release body — "
+            "skipping integrity verification (--force). "
+            "Only use this if you trust the release source.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     # Download to a temp file
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
