@@ -128,10 +128,12 @@ def merge_records(records: list[dict]) -> dict:
     skillhub_rank: str | None = None
     skillhub_score: float | None = None
     categories: set[str] = set()
+    triggers: list[str] = []
     description = ""
     name = ""
     platforms: set[str] = set()
     skill_md_url: str = ""
+    safety_scan: bool | None = None
 
     for rec in records:
         src = rec.get("source", "")
@@ -164,6 +166,18 @@ def merge_records(records: list[dict]) -> dict:
         for cat in meta.get("categories", []):
             if cat:
                 categories.add(cat)
+        for topic in meta.get("topics", []):
+            if topic:
+                categories.add(topic)
+
+        # Triggers — collect from any source, deduplicate while preserving order
+        for trigger in meta.get("triggers", []):
+            if trigger and trigger not in triggers:
+                triggers.append(trigger)
+
+        # Safety scan — prefer clawhub
+        if src == "clawhub" and meta.get("safety_scan") is not None:
+            safety_scan = meta["safety_scan"]
 
         # SkillHub rank and score
         if src == "skillhub":
@@ -190,8 +204,10 @@ def merge_records(records: list[dict]) -> dict:
         "description": description,
         "source": sources_seen,
         "categories": sorted(categories),
+        "triggers": triggers,
         "platforms": sorted(platforms),
         "skill_md_url": skill_md_url,
+        "safety_scan": safety_scan,
         "install_cmd": {},          # populated separately by build_install_cmds
         "quality": {
             "stars": stars,

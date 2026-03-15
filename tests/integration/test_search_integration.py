@@ -123,7 +123,8 @@ class TestSearchIntegration:
         with patch("scripts.search.embed_query", return_value=vec):
             results = search("test query", index, metadata)
         parsed = json.loads(format_results(results, as_json=True))
-        assert isinstance(parsed, list)
+        assert isinstance(parsed, dict)
+        assert isinstance(parsed.get("results"), list)
 
     def test_search_with_no_index_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
