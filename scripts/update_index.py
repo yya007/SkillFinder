@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import re
 import shutil
 import sys
@@ -30,10 +29,10 @@ import requests
 # Constants
 # ---------------------------------------------------------------------------
 
-REPO = "yya007/skill-finder"
+REPO = "yya007/SkillFinder"
 GITHUB_API = "https://api.github.com"
 RELEASE_URL = f"{GITHUB_API}/repos/{REPO}/releases/latest"
-_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+_DEFAULT_DATA_DIR = str(Path(__file__).parent / ".." / "data")
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +154,8 @@ def verify_sha256(path: str, expected: str) -> bool:
     Raises:
         FileNotFoundError: If the file does not exist.
     """
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"File not found for checksum verification: {path}")
-
     sha = hashlib.sha256()
-    with p.open("rb") as fh:
+    with Path(path).open("rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
             sha.update(chunk)
     return sha.hexdigest().lower() == expected.lower()
@@ -178,9 +173,7 @@ def download_file(url: str, dest: str) -> None:
         raise RuntimeError(
             f"Download failed (HTTP {resp.status_code}) from {url}"
         )
-    dest_path = Path(dest)
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with dest_path.open("wb") as fh:
+    with Path(dest).open("wb") as fh:
         for chunk in resp.iter_content(chunk_size=65536):
             fh.write(chunk)
 
@@ -214,12 +207,21 @@ def extract_artifact(tar_path: str, data_dir: str) -> None:
                     continue
                 # Extract flat: strip any directory prefix, put files at staging root
                 member.name = member_path.name
-                tar.extract(member, path=staging)
+                tar.extract(member, path=staging, filter="data")
+
+        # Verify required index files were extracted
+        required = {"index.faiss", "metadata.jsonl", "version.txt"}
+        extracted = {f.name for f in staging.iterdir()}
+        missing = required - extracted
+        if missing:
+            raise RuntimeError(
+                f"Extraction incomplete — missing: {', '.join(sorted(missing))}. "
+                "The release artifact may be corrupt."
+            )
 
         # Move staged files into data_dir
         for staged_file in staging.iterdir():
-            dest = data_path / staged_file.name
-            staged_file.replace(dest)
+            staged_file.replace(data_path / staged_file.name)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
@@ -238,7 +240,8 @@ def run_update(
         force:      If True, download even if the local index is current.
 
     Returns:
-        Dict with "status" ("up_to_date" | "updated" | "error") and "message".
+        Dict with "status" ("up_to_date" | "update_available" | "updated" | "error")
+        and "message".
     """
     try:
         local_version = read_local_version(data_dir)
@@ -277,6 +280,14 @@ def run_update(
 
     url = tar_asset["browser_download_url"]
     expected_sha = parse_release_sha256(release.get("body", ""))
+    if not expected_sha and not force:
+        return {
+            "status": "error",
+            "message": (
+                "SHA256 checksum not found in release body — cannot verify download. "
+                "Use --force to bypass (not recommended)."
+            ),
+        }
 
     # Download to a temp file
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
@@ -285,19 +296,17 @@ def run_update(
     try:
         download_file(url, tmp_path)
 
-        if expected_sha:
-            if not verify_sha256(tmp_path, expected_sha):
-                return {
-                    "status": "error",
-                    "message": "SHA256 checksum mismatch — download may be corrupt.",
-                }
+        if expected_sha and not verify_sha256(tmp_path, expected_sha):
+            return {
+                "status": "error",
+                "message": "SHA256 checksum mismatch — download may be corrupt.",
+            }
 
         extract_artifact(tmp_path, data_dir)
-    except Exception as exc:
+    except (OSError, RuntimeError, requests.RequestException) as exc:
         return {"status": "error", "message": str(exc)}
     finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        Path(tmp_path).unlink(missing_ok=True)
 
     return {
         "status": "updated",
