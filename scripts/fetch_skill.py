@@ -344,7 +344,7 @@ if __name__ == "__main__":
             print(result)
     except FetchError as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        print(f"Attempted URLs:", file=sys.stderr)
+        print("Attempted URLs:", file=sys.stderr)
         for url in exc.attempted_urls:
             print(f"  {url}", file=sys.stderr)
         sys.exit(1)

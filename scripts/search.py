@@ -9,6 +9,11 @@ Usage:
     python scripts/search.py "deploy kubernetes clusters" --propose 10
     python scripts/search.py "web scraping" --platform claude_code
     python scripts/search.py "ci/cd pipeline" --propose 5 --json
+
+NOTE: Running this script directly returns a raw candidate pool. The full
+SkillFinder experience (query reformulation, tiered fallback, semantic
+reranking) is provided by the agent workflow in SKILL.md. Direct CLI use
+is for developers and power users; results will be less refined.
 """
 
 from __future__ import annotations
@@ -16,7 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 from typing import Optional
 
 import faiss
@@ -55,20 +62,52 @@ class AlignmentError(Exception):
 # Ollama helpers
 # ---------------------------------------------------------------------------
 
-def check_ollama(url: str = OLLAMA_URL) -> None:
-    """Verify Ollama is reachable.
-
-    GETs the base URL. Raises OllamaNotAvailableError if the connection fails.
-    """
+def _is_ollama_running(url: str = OLLAMA_URL) -> bool:
+    """Return True if Ollama API is reachable at *url*."""
     try:
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-    except (requests.ConnectionError, requests.Timeout, requests.HTTPError):
+        requests.get(f"{url}/api/tags", timeout=1).raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def ensure_ollama(url: str = OLLAMA_URL) -> "Optional[subprocess.Popen[bytes]]":
+    """Ensure Ollama is running, starting it if necessary.
+
+    Returns the Popen process if Ollama was started by this call (caller
+    should terminate it when done), or None if it was already running.
+
+    Raises OllamaNotAvailableError if Ollama cannot be started.
+    """
+    if _is_ollama_running(url):
+        return None
+
+    # Try to start Ollama in the background
+    print("Starting Ollama...", file=sys.stderr, flush=True)
+    try:
+        proc = subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
         raise OllamaNotAvailableError(
-            "Ollama is not running or not installed. "
+            "Ollama is not installed. "
             "Install it at https://ollama.com/install, then run: "
             "ollama pull qwen3-embedding:0.6b"
         )
+
+    # Wait up to 10 s for it to become ready
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if _is_ollama_running(url):
+            return proc
+        time.sleep(0.5)
+
+    proc.terminate()
+    raise OllamaNotAvailableError(
+        "Ollama was started but did not become ready within 10 seconds."
+    )
 
 
 def embed_query(
@@ -286,6 +325,7 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
             item["description"] = r.get("description", "")
             item["repo_url"] = r.get("repo_url", "")
             item["skill_md_url"] = r.get("skill_md_url", "")
+            item["source"] = r.get("source", [])
             item["platforms"] = r.get("platforms", [])
             item["install_cmd"] = r.get("install_cmd", {})
             item["quality"] = r.get("quality", {})
@@ -298,14 +338,14 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
         for i, r in enumerate(results, 1):
             name = r.get("name", "(unknown)")
             description = r.get("description", "")
-            repo_url = r.get("repo_url", "")
+            skill_url = r.get("skill_md_url", "") or r.get("repo_url", "")
             stars = r.get("quality", {}).get("stars", 0) or 0
             star_str = f"  ⭐ {stars:,}" if stars else ""
             lines.append(f"{i}. {name}{star_str}")
             if description:
                 lines.append(f"   {description}")
-            if repo_url:
-                lines.append(f"   {repo_url}")
+            if skill_url:
+                lines.append(f"   Skill: {skill_url}")
             install = r.get("install_cmd", {})
             for platform, cmd in install.items():
                 lines.append(f"   [{platform}] {cmd}")
@@ -387,6 +427,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="DATA_DIR",
         help="Path to directory containing index.faiss and metadata.jsonl.",
     )
+    parser.epilog = (
+        "NOTE: This script returns a raw candidate pool. For best results invoke "
+        "SkillFinder through your agent (Claude Code, OpenClaw, or Codex), which "
+        "adds query reformulation, tiered fallback, and semantic reranking."
+    )
     return parser
 
 
@@ -394,44 +439,54 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
-    # Check Ollama availability
+    # Start Ollama if not already running; remember the process so we can stop it
     try:
-        check_ollama()
+        ollama_proc = ensure_ollama()
     except OllamaNotAvailableError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    # Load index
-    index_path = os.path.join(args.data, "index.faiss")
-    metadata_path = os.path.join(args.data, "metadata.jsonl")
     try:
-        index, metadata = load_index(index_path, metadata_path)
-    except FileNotFoundError as exc:
-        print(
-            f"Error: {exc}\n"
-            "Run `python scripts/update_index.py` to download the latest index.",
-            file=sys.stderr,
+        # Load index
+        index_path = os.path.join(args.data, "index.faiss")
+        metadata_path = os.path.join(args.data, "metadata.jsonl")
+        try:
+            index, metadata = load_index(index_path, metadata_path)
+        except FileNotFoundError as exc:
+            print(
+                f"Error: {exc}\n"
+                "The index files should be included in the repository.\n"
+                "If you used a shallow clone, try: git fetch --unshallow\n"
+                "To download the latest index manually: python scripts/update_index.py",
+                file=sys.stderr,
+            )
+            return 1
+        except AlignmentError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+        # Run search
+        results = search(
+            query=args.query,
+            index=index,
+            metadata=metadata,
+            propose_n=args.propose,
+            platforms=args.platforms,
+            sources=args.sources,
+            min_stars=args.min_stars,
+            safety_only=args.safety_only,
         )
-        return 1
-    except AlignmentError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
 
-    # Run search
-    results = search(
-        query=args.query,
-        index=index,
-        metadata=metadata,
-        propose_n=args.propose,
-        platforms=args.platforms,
-        sources=args.sources,
-        min_stars=args.min_stars,
-        safety_only=args.safety_only,
-    )
-
-    # Format and print
-    print(format_results(results, as_json=args.as_json))
-    return 0
+        # Format and print
+        print(format_results(results, as_json=args.as_json))
+        return 0
+    finally:
+        if ollama_proc is not None:
+            ollama_proc.terminate()
+            try:
+                ollama_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                ollama_proc.kill()
 
 
 if __name__ == "__main__":
