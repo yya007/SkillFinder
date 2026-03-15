@@ -250,7 +250,8 @@ python skills/skill-finder/scripts/update_index.py
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- How should the agent handle queries with strong quality filters ("only S-rated skills for terraform")? Should it pass `--min_quality` automatically or ask the user?
-- For the `plugin.json` `postinstall` field — is this a standard Claude Code Skills Marketplace feature? Need to verify the actual postinstall mechanism.
+**Agent handling of quality filter queries** — Resolved. The `--min_stars N` flag (implemented in `search.py`) handles star-count filtering. The agent defaults to `--min_stars 10` to filter obvious noise, with a fallback retry omitting `--min_stars` if the filtered result set is empty. Qualitative quality signals (SkillHub ratings like "S", "A") are passed as metadata in the JSON output for agent-side reranking rather than as a hard CLI filter, since thresholds vary by registry.
+
+**`plugin.json` postinstall mechanism** — Resolved. The Claude Code plugin spec (`.claude-plugin/plugin.json`) does not have a standard `postinstall` hook. Install-time setup (downloading the FAISS index) is handled via explicit user instructions in the README: `pip install -r scripts/requirements.txt && python scripts/update_index.py`. A `plugin.json` manifest has been created at the repo root with an `install.steps` field documenting these commands for marketplace tooling that supports it.

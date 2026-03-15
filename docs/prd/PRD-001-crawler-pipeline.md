@@ -150,8 +150,10 @@ lxml>=5.0             # faster HTML parser for bs4
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- GitHub Code Search caps at 1,000 results per query. Strategy for SkillsMP: shard by date range (`pushed:>2025-01-01`) and by language filter. Need to validate this gets full coverage.
-- SkillHub may add bot detection. Have a plan for rotating user agents or using Playwright if needed.
-- ClawHub REST API: is it public? Need to test if it's accessible without auth.
+**GitHub Code Search 1,000-result cap** — Resolved. The SkillsMP crawler shards by `SKILL.md` file size (`size:<=500`, `size:501..2000`, `size:2001..10000`, `size:>10000`). Each shard is a disjoint byte range, so combining all four covers the full result set without hitting the cap. Cross-shard deduplication is applied before returning results.
+
+**SkillHub bot detection** — Resolved. The crawler respects `robots.txt` (via `urllib.robotparser`) and sets a descriptive `User-Agent`. No Playwright required at current crawl volume. If SkillHub adds JavaScript-rendered pages or CAPTCHAs in future, add a Playwright fallback behind a `--playwright` flag.
+
+**ClawHub REST API authentication** — Resolved. ClawHub is indexed via the GitHub API (searching the `openclaw/clawhub` repository), not a separate ClawHub REST API. Standard `GITHUB_TOKEN` is sufficient; no additional credentials needed.

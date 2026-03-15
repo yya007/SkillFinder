@@ -160,7 +160,8 @@ No `openai`, no `sentence-transformers`.
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- Ollama cold-start in CI after `ollama pull` is typically fast but model download time depends on runner network speed (~600MB for qwen3-embedding:0.6b). May want to cache the model layer using `actions/cache` keyed on the model name + version.
-- Should `data/embeddings.npy` be included in the release artifact? It's ~80MB extra but enables rebuilding the index without re-embedding. Probably exclude from the user-facing artifact and keep only `index.faiss` + `metadata.jsonl`.
+**Ollama model caching in CI** — Resolved. The workflow caches `~/.ollama/models` using `actions/cache@v4` with key `ollama-qwen3-embedding-0.6b`. Subsequent runs restore the cached model (~600 MB) instead of re-downloading, cutting the Ollama setup step from ~3 min to ~10 s on a warm cache.
+
+**`embeddings.npy` in release artifact** — Resolved. Excluded. The release tarball contains only `index.faiss`, `metadata.jsonl`, and `version.txt`. `embeddings.npy` (~80 MB) is a build-time intermediate; end users never need it. Developers who want to rebuild the index without re-embedding can download the artifact and run `build_index.py` on their own embeddings.
