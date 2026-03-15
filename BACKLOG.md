@@ -26,34 +26,6 @@ automated scanner. It has two gaps:
 
 ---
 
-### SHA256 verification — force-bypass warning
-**Priority: medium** ✅ *resolved*
-Added stderr warning when `--force` bypasses SHA256 verification, so it is
-never silently used in scripts.
-
-**File:** `scripts/update_index.py`, `run_update()`.
-
----
-
-### ClawHub install_cmd cross-platform bug
-**Priority: high** ✅ *resolved*
-`pipeline/normalize.py` correctly emits `clawhub install <name>` under the
-`openclaw` key only; no `claude_code` entry is generated for ClawHub-only skills.
-
-**File:** `pipeline/normalize.py` (ClawHub normalization branch).
-
----
-
-### STAR_SHARDS not exported from skillsmp_crawler
-**Priority: high** ✅ *resolved*
-`crawlers/skillsmp_deep_crawler.py` imports `STAR_SHARDS`, `SIZE_SHARDS`,
-`_BASE_QUERY`, and `_OVERFLOW_THRESHOLD` directly from `skillsmp_crawler.py` —
-no duplicate definitions.
-
-**Files:** `crawlers/skillsmp_crawler.py`, `crawlers/skillsmp_deep_crawler.py`.
-
----
-
 ## Features
 
 ### Remote search fallback
@@ -75,13 +47,17 @@ Scope:
 
 ---
 
-### Monorepo dedup collapse via skill_md_url
-**Priority: medium** ✅ *resolved*
-`pipeline/normalize.py` uses `sha256(skill_md_url)` as the dedup key when
-`skill_md_url` is present, falling back to `sha256(repo_url)` only when absent.
-Each skill in a monorepo gets a unique ID.
+### npm/PyPI skill package crawler
+**Priority: low**
+Skills distributed as npm packages (e.g. `@scope/claude-skill-foo`) or PyPI packages
+are not discoverable via GitHub code search or registry crawlers. A future crawler
+could query the npm registry (`https://registry.npmjs.org/-/v1/search?text=claude-skill`)
+and PyPI JSON API (`https://pypi.org/search/?q=claude-skill`) to find packaged skills.
 
-**File:** `pipeline/normalize.py:379`, `docs/prd/PRD-005-ci-cd-release.md`.
+**Prerequisite:** Define a packaging convention (must include SKILL.md at package root or
+declare `"skillfinder": true` in package.json / pyproject.toml).
+
+**File:** `crawlers/npm_crawler.py`, `crawlers/pypi_crawler.py` (new files, not yet planned).
 
 ---
 
@@ -129,15 +105,6 @@ period or explicit versioning for the ID scheme.
 
 ---
 
-### Add progress output when auto-starting Ollama
-**Priority: medium** ✅ *resolved*
-`ensure_ollama()` now prints "Starting Ollama..." before the wait loop and
-"Ollama ready." when it becomes available.
-
-**File:** `scripts/search.py`, `ensure_ollama()`.
-
----
-
 ### Report line numbers on JSON parse errors in incremental_update.py
 **Priority: low** *(review issue 11)*
 `json.loads(line)` in `load_existing_ids()` and `find_new_skills()` raises
@@ -168,20 +135,6 @@ incremental vs. full rebuild and when to use each.
 
 ## Testing
 
-### Zero test coverage for skillsmp_deep_crawler
-**Priority: high** ✅ *resolved*
-`tests/crawlers/test_skillsmp_deep_crawler.py` covers state persistence, resume,
-date-shard exhaustion logic, and early stop on target.
-
----
-
-### Zero test coverage for incremental_update.py
-**Priority: medium** ✅ *resolved*
-`tests/unit/test_incremental_update.py` covers `load_existing_ids`,
-`find_new_skills`, model-mismatch guard, IVFFlat guard, and append alignment.
-
----
-
 ### Crawler integration tests require live GitHub API
 **Priority: medium**
 Tests in `tests/test_integration.py` that touch crawlers hit the real GitHub
@@ -192,10 +145,3 @@ logic can be tested in CI without network access.
 **File:** `tests/test_integration.py`, `requirements-dev.txt`.
 
 ---
-
-### Missing edge-case coverage in test_update_index.py
-**Priority: medium** ✅ *resolved*
-Added: SHA mismatch → `status=="error"`, no `.tar.gz` asset, `check_only` status,
-path traversal rejection, `--force` with/without SHA256.
-
-**File:** `tests/test_update_index.py`.
