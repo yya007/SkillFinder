@@ -122,11 +122,3 @@ class TestSearchQuality:
             )
             assert isinstance(results, list)
 
-    def test_safety_only_filter_works_on_real_index(self, loaded_index, queries):
-        """Safety-flagged skills must not appear when safety_only=True."""
-        from scripts.search import search
-        index, metadata = loaded_index
-        for item in queries[:5]:
-            results = search(item["query"], index, metadata, propose_n=10, safety_only=True)
-            for r in results:
-                assert r["quality"]["safety_flag"] is False

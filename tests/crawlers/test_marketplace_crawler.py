@@ -205,6 +205,23 @@ class TestRunMarketplace:
             record = json.loads(line)
             assert record["source"] == "marketplace"
 
+    def test_list_skill_dirs_delegates_to_find_skill_md_paths(self):
+        """list_skill_dirs() uses the shared find_skill_md_paths helper (not its own tree walk)."""
+        from crawlers.marketplace_crawler import list_skill_dirs
+
+        mock_session = MagicMock()
+        with patch("crawlers.marketplace_crawler.find_skill_md_paths") as mock_find, \
+             patch("crawlers.marketplace_crawler.fetch_skill_content") as mock_content:
+            mock_find.return_value = ["foo/SKILL.md"]
+            mock_content.return_value = None
+
+            entries = list_skill_dirs(mock_session, "owner/repo")
+
+        mock_find.assert_called_once_with(mock_session, "owner/repo")
+        assert len(entries) == 1
+        assert entries[0]["path"] == "foo/SKILL.md"
+        assert entries[0]["parent_repo_url"] == "https://github.com/owner/repo"
+
 
 # ---------------------------------------------------------------------------
 # TestMarketplaceCrawlerNetwork — real network calls

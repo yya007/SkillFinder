@@ -15,6 +15,7 @@ Each record conforms to the raw record schema defined in PRD-001.
 from __future__ import annotations
 
 import argparse
+import base64
 import logging
 import re
 import sys
@@ -22,6 +23,8 @@ import time
 from typing import Iterator
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urljoin, urlparse
+
+import yaml
 
 try:
     from bs4 import BeautifulSoup
@@ -31,8 +34,14 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from crawlers.base import (
+    GITHUB_API,
+    add_to_filter_cache,
     extract_github_url,
+    fetch_repo_metadata,
+    find_skill_md_paths,
+    infer_platforms,
     load_existing_urls,
+    load_filter_cache,
     make_session,
     write_jsonl,
 )
@@ -47,6 +56,44 @@ _REQUEST_DELAY = 1.5                  # seconds between HTTP requests (polite cr
 _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfinder)"
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SKILL.md helpers
+# ---------------------------------------------------------------------------
+
+def _parse_frontmatter(content: str) -> dict:
+    """Extract YAML frontmatter from a SKILL.md string."""
+    if not content or not content.startswith("---"):
+        return {}
+    end_match = re.search(r"\n---\s*\n", content[3:])
+    if not end_match:
+        return {}
+    yaml_text = content[3: end_match.start() + 3]
+    try:
+        fm = yaml.safe_load(yaml_text)
+        if not isinstance(fm, dict):
+            return {}
+        return fm
+    except yaml.YAMLError:
+        return {}
+
+
+def _fetch_skill_md(session, repo_full_name: str, path: str = "SKILL.md", default_branch: str = "main") -> str | None:
+    """Fetch raw SKILL.md content from a GitHub repo via GitHub API."""
+    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
+    try:
+        resp = session.get(url, params={"ref": default_branch}, timeout=30)
+    except Exception as exc:
+        log.debug("Network error fetching SKILL.md from %s: %s", repo_full_name, exc)
+        return None
+    if resp.status_code == 200:
+        try:
+            encoded = resp.json().get("content", "")
+            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -105,29 +152,24 @@ def get_skill_list_page(session, page: int = 1) -> tuple[list[dict], bool]:
 
     skills: list[dict] = []
 
-    # SkillHub renders skill cards; we look for common patterns.
-    # Attempt 1: look for <article> or <div> elements with a "skill" class variant.
-    card_selectors = [
-        "article.skill-card",
-        "div.skill-card",
-        "li.skill-item",
-        "div.skill",
-        "article",           # broad fallback — filtered further below
-    ]
-
+    # SkillHub (Next.js SSR): skill cards are <a class="block h-full group" href="/skills/...">
+    # direct children of a <div class="grid ... gap-6"> container.
+    grid = soup.find(
+        "div",
+        class_=lambda c: c and "grid" in c and "gap-6" in c if c else False,
+    )
     cards = []
-    for selector in card_selectors:
-        cards = soup.select(selector)
-        if cards:
-            log.debug("Found %d cards with selector '%s' on page %d", len(cards), selector, page)
-            break
+    if grid:
+        cards = grid.find_all(
+            "a",
+            class_=lambda c: c and "group" in c if c else False,
+            href=True,
+        )
+        log.debug("Found %d cards in skills grid on page %d", len(cards), page)
 
     for card in cards:
-        # --- extract link to detail page ---
-        link_tag = card.find("a", href=True)
-        if link_tag is None:
-            continue
-        href = link_tag["href"]
+        # Card IS the <a> element — href is on the card itself
+        href = card["href"]
         if not href.startswith("http"):
             href = urljoin(SKILLHUB_BASE, href)
         # Only follow links that are within skillhub.club
@@ -135,27 +177,22 @@ def get_skill_list_page(session, page: int = 1) -> tuple[list[dict], bool]:
             continue
 
         # --- extract name ---
-        # Prefer heading tags, fall back to link text
         name_tag = card.find(["h1", "h2", "h3", "h4"])
-        name = name_tag.get_text(strip=True) if name_tag else link_tag.get_text(strip=True)
+        name = name_tag.get_text(strip=True) if name_tag else ""
         if not name:
             continue
 
         # --- extract description snippet ---
-        # Typically a <p> inside the card
         desc_tag = card.find("p")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        # --- extract rank badge ---
+        # --- extract rank badge (class "rating-S", "rating-A", etc.) ---
         rank = ""
-        rank_tag = card.find(class_=lambda c: c and "rank" in c.lower() if c else False)
+        rank_tag = card.find(class_=lambda c: c and any(
+            f"rating-{g.lower()}" in " ".join(c).lower() for g in ("S", "A", "B", "C", "F")
+        ) if c else False)
         if rank_tag:
-            rank_text = rank_tag.get_text(strip=True)
-            # Keep only the letter grade (S/A/B/C)
-            for grade in ("S", "A", "B", "C"):
-                if grade in rank_text:
-                    rank = grade
-                    break
+            rank = rank_tag.get_text(strip=True)
 
         skills.append(
             {
@@ -231,40 +268,32 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
         log.debug("No GitHub URL found on detail page: %s", skillhub_url)
         return None
 
-    # --- full description ---
+    # --- full description (meta tags are most reliable) ---
     full_description = ""
-    desc_candidates = [
-        soup.find("div", class_=lambda c: c and "description" in c.lower() if c else False),
-        soup.find("section", class_=lambda c: c and "description" in c.lower() if c else False),
-        soup.find("div", class_=lambda c: c and "content" in c.lower() if c else False),
-        soup.find("main"),
-        soup.find("article"),
-    ]
-    for candidate in desc_candidates:
-        if candidate:
-            text = candidate.get_text(separator=" ", strip=True)
-            if len(text) > len(full_description):
-                full_description = text
-    # Fallback: meta description
-    if not full_description:
-        meta_desc = soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content"):
-            full_description = meta_desc["content"].strip()
+    for meta_selector in [
+        {"property": "og:description"},
+        {"name": "description"},
+    ]:
+        meta_tag = soup.find("meta", attrs=meta_selector)
+        if meta_tag and meta_tag.get("content", "").strip():
+            full_description = meta_tag["content"].strip()
+            break
 
-    # --- rank ---
+    # --- rank (class "rating-S", "rating-A", etc.) ---
     rank = ""
-    rank_tag = soup.find(class_=lambda c: c and "rank" in c.lower() if c else False)
+    rank_tag = soup.find(class_=lambda c: c and any(
+        f"rating-{g.lower()}" in " ".join(c).lower() for g in ("S", "A", "B", "C", "F")
+    ) if c else False)
     if rank_tag:
-        rank_text = rank_tag.get_text(strip=True)
-        for grade in ("S", "A", "B", "C"):
-            if grade in rank_text:
-                rank = grade
-                break
+        rank = rank_tag.get_text(strip=True)
 
     # --- overall score ---
     overall_score: float = 0.0
     score_tag = soup.find(
-        class_=lambda c: c and ("overall" in c.lower() or "score" in c.lower()) if c else False
+        class_=lambda c: c and any(
+            "overall" in cls.lower() or "score" in cls.lower()
+            for cls in (c if isinstance(c, list) else [c])
+        ) if c else False
     )
     if score_tag:
         score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", score_tag.get_text())
@@ -335,20 +364,63 @@ def build_raw_record(skill: dict) -> dict | None:
             "overall_score": skill.get("overall_score", 0.0),
             "dimension_scores": skill.get("dimension_scores", {}),
             "skillhub_url": skill.get("skillhub_url", ""),
+            "stars": skill.get("stars", 0),
+            "pushed_at": skill.get("pushed_at", ""),
+            "skill_md_url": skill.get("skill_md_url", ""),
+            "platforms": skill.get("platforms", ["claude_code"]),
         },
     }
 
 
-def scrape_skill_listing(session=None, limit: int = None) -> list[dict]:
+def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
+    """Pick the best SKILL.md path by matching the skill name to its parent directory.
+
+    Normalises both the skill name and each path's parent directory to
+    alphanumeric-only lowercase before comparing.  Falls back to the first
+    result when no match is found.
+
+    Args:
+        skill_name:      Display name of the skill from SkillHub.
+        skill_md_paths:  List of SKILL.md paths from Trees API.
+
+    Returns:
+        Best-matching path, or None if skill_md_paths is empty.
+    """
+    if not skill_md_paths:
+        return None
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", s.lower())
+
+    name_norm = _norm(skill_name)
+
+    for path in skill_md_paths:
+        parts = path.split("/")
+        if len(parts) >= 2:
+            dir_norm = _norm(parts[-2])
+            if name_norm == dir_norm or dir_norm in name_norm or name_norm in dir_norm:
+                return path
+
+    return skill_md_paths[0]
+
+
+def scrape_skill_listing(
+    session=None,
+    limit: int = None,
+    token: str = None,
+    filter_cache_path: str = None,
+) -> list[dict]:
     """Scrape all SkillHub skills and return unified parsed skill dicts.
 
     Handles pagination and detail-page fetching internally. Each returned
     dict has keys: name, description, repo_url, rank, overall_score,
-    dimension_scores, skillhub_url.
+    dimension_scores, skillhub_url, stars, pushed_at, skill_md_url, platforms.
 
     Args:
-        session: requests.Session (creates one if None).
-        limit:   Stop after this many skills (for testing).
+        session:           requests.Session for SkillHub HTTP (creates one if None).
+        limit:             Stop after this many skills (for testing).
+        token:             GitHub personal access token for fetching repo metadata.
+        filter_cache_path: Path to shared filter cache JSONL file.
 
     Returns:
         List of unified skill dicts.
@@ -356,6 +428,14 @@ def scrape_skill_listing(session=None, limit: int = None) -> list[dict]:
     if session is None:
         session = make_session()
         session.headers.update({"User-Agent": _USER_AGENT})
+
+    github_session = make_session(token=token) if token else None
+
+    # Load filter cache
+    filter_cache: set[str] = set()
+    if filter_cache_path:
+        filter_cache = load_filter_cache(filter_cache_path)
+        log.info("Filter cache loaded: %d entries", len(filter_cache))
 
     rp = _load_robots(session)
     results: list[dict] = []
@@ -386,14 +466,55 @@ def scrape_skill_listing(session=None, limit: int = None) -> list[dict]:
                 log.warning("Failed detail page %s: %s", detail_url, exc)
                 detail = {}
 
+            github_url = detail.get("github_url", "")
+            stars = 0
+            pushed_at = ""
+            skill_md_url = ""
+            platforms = ["claude_code"]
+
+            # Check filter cache before making GitHub API calls
+            if github_url and github_url in filter_cache:
+                log.debug("Skipping %s: in filter cache", github_url)
+                continue
+
+            if github_url and github_session:
+                full_name = github_url.removeprefix("https://github.com/")
+                meta = fetch_repo_metadata(github_session, full_name)
+                stars = meta.get("stargazers_count", 0)
+                pushed_at = meta.get("pushed_at", "")
+                default_branch = meta.get("default_branch", "main")
+
+                # Use Trees API to find the correct SKILL.md path
+                skill_md_paths = find_skill_md_paths(github_session, full_name)
+                if not skill_md_paths:
+                    if filter_cache_path:
+                        add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
+                        filter_cache.add(github_url)
+                    skill_path = None
+                else:
+                    skill_path = _match_skill_path(basic["name"], skill_md_paths)
+
+                if skill_path:
+                    skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
+                    skill_content = _fetch_skill_md(
+                        github_session, full_name, path=skill_path, default_branch=default_branch
+                    )
+                    if skill_content:
+                        fm = _parse_frontmatter(skill_content)
+                        platforms = infer_platforms(fm, "skillhub")
+
             unified = {
                 "name": basic["name"],
                 "description": detail.get("full_description") or basic.get("description", ""),
-                "repo_url": detail.get("github_url", ""),
+                "repo_url": github_url,
                 "rank": detail.get("rank") or basic.get("rank", ""),
                 "overall_score": detail.get("overall_score", 0.0),
                 "dimension_scores": detail.get("dimension_scores", {}),
                 "skillhub_url": detail_url,
+                "stars": stars,
+                "pushed_at": pushed_at,
+                "skill_md_url": skill_md_url,
+                "platforms": platforms,
             }
             results.append(unified)
 
@@ -411,13 +532,21 @@ def scrape_skill_listing(session=None, limit: int = None) -> list[dict]:
 # Main run function
 # ---------------------------------------------------------------------------
 
-def run(output_path: str, limit: int = None, resume: bool = False) -> int:
+def run(
+    output_path: str,
+    limit: int = None,
+    resume: bool = False,
+    token: str = None,
+    filter_cache_path: str = None,
+) -> int:
     """Run the SkillHub crawler.
 
     Args:
-        output_path: Path to output JSONL file.
-        limit:       Stop after writing this many records (for testing).
-        resume:      If True, skip repos already present in output_path.
+        output_path:       Path to output JSONL file.
+        limit:             Stop after writing this many records (for testing).
+        resume:            If True, skip repos already present in output_path.
+        token:             GitHub personal access token for fetching repo metadata.
+        filter_cache_path: Path to shared filter cache JSONL file.
 
     Returns:
         Number of new records written.
@@ -430,7 +559,9 @@ def run(output_path: str, limit: int = None, resume: bool = False) -> int:
         existing_urls = load_existing_urls(output_path)
         log.info("Resume mode: %d repos already in output", len(existing_urls))
 
-    skills = scrape_skill_listing(session=session, limit=limit)
+    skills = scrape_skill_listing(
+        session=session, limit=limit, token=token, filter_cache_path=filter_cache_path
+    )
 
     batch: list[dict] = []
     written = 0
@@ -484,9 +615,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stop after writing N records (for testing)",
     )
     p.add_argument(
+        "--token",
+        default=None,
+        metavar="TOKEN",
+        help="GitHub personal access token for fetching repo metadata (or set GITHUB_TOKEN env var)",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="Skip repos already present in the output file",
+    )
+    p.add_argument(
+        "--filter-cache",
+        default="data/filter_cache.jsonl",
+        metavar="PATH",
+        help="Shared filter-cache JSONL file (pass empty string to disable)",
     )
     p.add_argument(
         "--log-level",
@@ -507,11 +650,16 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
+    import os as _os
+    token = getattr(args, "token", None) or _os.environ.get("GITHUB_TOKEN")
+    filter_cache_path = getattr(args, "filter_cache", None) or None
     try:
         count = run(
             output_path=args.output,
             limit=args.limit,
             resume=args.resume,
+            token=token,
+            filter_cache_path=filter_cache_path,
         )
         print(f"Wrote {count} total records to {args.output}", file=sys.stderr)
         return 0

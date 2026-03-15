@@ -32,19 +32,16 @@ def make_skill(
     stars=10,
     skillhub_rank=None,
     skillhub_score=None,
-    safety_scan="clean",
-    safety_flag=False,
     categories=None,
-    triggers=None,
     install_cmd=None,
     last_updated="2026-01-01",
+    skill_md_url="",
+    platforms=None,
 ) -> dict:
     """Return a fully-populated unified skill record."""
     cats = categories or ["testing"]
-    trigs = triggers or []
+    plats = platforms or ["claude_code"]
     text = f"{name}. {description} Categories: {', '.join(cats)}."
-    if trigs:
-        text += f" Use when: {'; '.join(trigs)}."
     return {
         "id": _skill_id(repo_url),
         "repo_url": repo_url,
@@ -52,14 +49,13 @@ def make_skill(
         "description": description,
         "source": source or ["skillsmp"],
         "categories": cats,
-        "triggers": trigs,
+        "platforms": plats,
+        "skill_md_url": skill_md_url,
         "install_cmd": install_cmd or {"claude_code": f"/plugin install {name}"},
         "quality": {
             "stars": stars,
             "skillhub_rank": skillhub_rank,
             "skillhub_score": skillhub_score,
-            "safety_scan": safety_scan,
-            "safety_flag": safety_flag,
             "last_updated": last_updated,
         },
         "embedding_text": text,
@@ -73,7 +69,8 @@ def make_raw_record(
     source="skillsmp",
     stars=10,
     pushed_at="2026-01-01",
-    topics=None,
+    skill_md_url="",
+    platforms=None,
 ) -> dict:
     """Return a raw crawler record (as written by crawlers to data/raw/)."""
     return {
@@ -84,7 +81,8 @@ def make_raw_record(
         "raw_metadata": {
             "stars": stars,
             "pushed_at": pushed_at,
-            "topics": topics or [],
+            "skill_md_url": skill_md_url,
+            "platforms": platforms or ["claude_code"],
         },
     }
 
@@ -96,18 +94,6 @@ def make_raw_record(
 @pytest.fixture
 def skill():
     return make_skill()
-
-
-@pytest.fixture
-def skill_with_triggers():
-    return make_skill(
-        triggers=["deploy kubernetes", "manage k8s", "blue-green deployment"]
-    )
-
-
-@pytest.fixture
-def skill_flagged():
-    return make_skill(safety_scan="warning: uses eval()", safety_flag=True)
 
 
 @pytest.fixture
@@ -131,28 +117,24 @@ def skills_for_search():
             description="Deploy Kubernetes clusters.",
             source=["skillsmp", "clawhub"],
             install_cmd={"claude_code": "/plugin install k8s-deployer", "openclaw": "clawhub install k8s-deployer"},
-            safety_flag=False,
         ),
         make_skill(
             name="codex-helper",
             description="Help with OpenAI Codex tasks.",
             source=["skillsmp"],
             install_cmd={"codex": "cp SKILL.md ~/.codex/skills/"},
-            safety_flag=False,
         ),
         make_skill(
             name="flagged-tool",
             description="A tool with a security warning.",
             source=["clawhub"],
             install_cmd={"claude_code": "/plugin install flagged-tool", "openclaw": "clawhub install flagged-tool"},
-            safety_flag=True,
         ),
         make_skill(
             name="clawhub-only",
             description="Available only on OpenClaw.",
             source=["clawhub"],
             install_cmd={"openclaw": "clawhub install clawhub-only"},
-            safety_flag=False,
         ),
     ]
 
@@ -176,7 +158,7 @@ def raw_records_with_overlap():
             "name": "kubernetes-deployer",
             "description": "Deploy Kubernetes clusters from ClawHub.",
             "source": "clawhub",
-            "raw_metadata": {"safety_scan": "clean", "categories": ["devops", "kubernetes"]},
+            "raw_metadata": {"categories": ["devops", "kubernetes"]},
         },
         {
             "repo_url": "https://github.com/user/kubernetes-deployer/",  # trailing slash variant

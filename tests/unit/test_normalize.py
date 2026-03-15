@@ -8,7 +8,6 @@ Tests cover:
   - merge_records: metadata priority merge
   - build_install_cmds: install command generation
   - passes_quality_filter: quality gate logic
-  - apply_safety_flag: safety flag assignment
   - normalize: end-to-end pipeline function
   - QualityGateError: raised when min_skills threshold not met
 """
@@ -21,7 +20,6 @@ import pytest
 from pipeline.normalize import (
     CURATED_SOURCES,
     QualityGateError,
-    apply_safety_flag,
     build_embedding_text,
     build_install_cmds,
     canonical_key,
@@ -114,17 +112,6 @@ class TestBuildEmbeddingText:
         for cat in skill["categories"]:
             assert cat in text
 
-    def test_includes_triggers_when_present(self, skill_with_triggers):
-        text = build_embedding_text(skill_with_triggers)
-        assert "Use when:" in text
-        for trigger in skill_with_triggers["triggers"]:
-            assert trigger in text
-
-    def test_omits_use_when_if_no_triggers(self, skill):
-        skill_copy = {**skill, "triggers": []}
-        text = build_embedding_text(skill_copy)
-        assert "Use when:" not in text
-
     def test_does_not_include_install_commands(self, skill):
         text = build_embedding_text(skill)
         assert "/plugin install" not in text
@@ -149,8 +136,8 @@ class TestBuildEmbeddingText:
         with pytest.raises(ValueError):
             build_embedding_text(bad)
 
-    def test_under_512_tokens_for_typical_skill(self, skill_with_triggers):
-        text = build_embedding_text(skill_with_triggers)
+    def test_under_512_tokens_for_typical_skill(self, skill):
+        text = build_embedding_text(skill)
         # Rough token estimate: 4 chars per token
         assert len(text) / 4 < 512
 
@@ -190,10 +177,6 @@ class TestMergeRecords:
         merged = merge_records(raw_records_with_overlap)
         assert merged["quality"]["skillhub_rank"] == "A"
         assert merged["quality"]["skillhub_score"] == pytest.approx(8.4)
-
-    def test_safety_scan_taken_from_clawhub(self, raw_records_with_overlap):
-        merged = merge_records(raw_records_with_overlap)
-        assert merged["quality"]["safety_scan"] == "clean"
 
     def test_categories_are_union(self, raw_records_with_overlap):
         merged = merge_records(raw_records_with_overlap)
@@ -250,8 +233,8 @@ class TestBuildInstallCmds:
 # ---------------------------------------------------------------------------
 
 class TestPassesQualityFilter:
-    def test_passes_with_stars_gte_2(self):
-        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 2, "skillhub_rank": None}}
+    def test_passes_with_stars_gte_10(self):
+        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 10, "skillhub_rank": None}}
         assert passes_quality_filter(skill) is True
 
     def test_passes_with_many_stars(self):
@@ -293,40 +276,16 @@ class TestPassesQualityFilter:
         skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 1, "skillhub_rank": None}}
         assert passes_quality_filter(skill) is False
 
+    def test_star_count_9_fails(self):
+        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 9, "skillhub_rank": None}}
+        assert passes_quality_filter(skill) is False
+
+    def test_star_count_10_passes(self):
+        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 10, "skillhub_rank": None}}
+        assert passes_quality_filter(skill) is True
+
 
 # ---------------------------------------------------------------------------
-# apply_safety_flag
-# ---------------------------------------------------------------------------
-
-class TestApplySafetyFlag:
-    def test_clean_scan_sets_flag_false(self, skill):
-        skill["quality"]["safety_scan"] = "clean"
-        skill["source"] = ["clawhub"]
-        result = apply_safety_flag(skill)
-        assert result["quality"]["safety_flag"] is False
-
-    def test_warning_scan_sets_flag_true(self):
-        skill = {
-            "source": ["clawhub"],
-            "quality": {"safety_scan": "warning: uses eval()", "safety_flag": False},
-        }
-        result = apply_safety_flag(skill)
-        assert result["quality"]["safety_flag"] is True
-
-    def test_non_clawhub_source_no_flag_regardless_of_scan(self):
-        skill = {
-            "source": ["skillsmp"],
-            "quality": {"safety_scan": "warning: suspicious code", "safety_flag": False},
-        }
-        result = apply_safety_flag(skill)
-        assert result["quality"]["safety_flag"] is False
-
-    def test_does_not_mutate_original(self, skill):
-        original_flag = skill["quality"].get("safety_flag", False)
-        _ = apply_safety_flag(skill)
-        assert skill["quality"].get("safety_flag", False) == original_flag
-
-
 # ---------------------------------------------------------------------------
 # normalize (end-to-end)
 # ---------------------------------------------------------------------------

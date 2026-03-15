@@ -114,17 +114,6 @@ class TestSearchIntegration:
         for r in claude_results:
             assert "claude_code" in r["install_cmd"]
 
-    def test_safety_only_excludes_flagged_skills(self, built_index):
-        index, metadata = load_index(
-            str(built_index / "index.faiss"),
-            str(built_index / "metadata.jsonl"),
-        )
-        vec = self._random_query_vec()
-        with patch("scripts.search.embed_query", return_value=vec):
-            results = search("web scraping", index, metadata, safety_only=True)
-        for r in results:
-            assert r["quality"]["safety_flag"] is False
-
     def test_json_output_is_parseable(self, built_index):
         index, metadata = load_index(
             str(built_index / "index.faiss"),
@@ -134,7 +123,8 @@ class TestSearchIntegration:
         with patch("scripts.search.embed_query", return_value=vec):
             results = search("test query", index, metadata)
         parsed = json.loads(format_results(results, as_json=True))
-        assert isinstance(parsed, list)
+        assert isinstance(parsed, dict)
+        assert isinstance(parsed.get("results"), list)
 
     def test_search_with_no_index_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):

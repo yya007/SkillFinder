@@ -2,12 +2,17 @@
 crawlers/base.py — Shared utilities for all SkillFinder crawlers.
 
 Public API:
-  GITHUB_API         - Base URL for GitHub REST API
-  make_session()     - Build a requests.Session with retry adapter and auth
-  github_get()       - Rate-limit-aware GET for GitHub API URLs
-  extract_github_url() - Normalize any URL to a canonical GitHub repo URL
-  write_jsonl()      - Write records to a JSONL file
-  load_existing_urls() - Load repo_urls already present in an output file
+  GITHUB_API            - Base URL for GitHub REST API
+  make_session()        - Build a requests.Session with retry adapter and auth
+  github_get()          - Rate-limit-aware GET for GitHub API URLs
+  extract_github_url()  - Normalize any URL to a canonical GitHub repo URL
+  fetch_repo_metadata() - Fetch stars/pushed_at/topics/branch for a repo
+  find_skill_md_paths() - Find all SKILL.md paths in a repo via Trees API
+  load_filter_cache()   - Load set of filtered-out canonical URLs
+  add_to_filter_cache() - Append a filtered URL+reason to the cache file
+  infer_platforms()     - Infer target platforms from frontmatter and source
+  write_jsonl()         - Write records to a JSONL file
+  load_existing_urls()  - Load repo_urls already present in an output file
 """
 
 from __future__ import annotations
@@ -119,9 +124,6 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             logger.warning("Network error on %s: %s", url, exc)
             continue
 
-        # Proactive rate-limit check on every response
-        _maybe_wait_for_reset(resp)
-
         # Rate-limit responses (429/403 with quota exhausted): sleep until reset
         # and retry immediately without consuming a backoff attempt slot.
         while resp.status_code in (429, 403):
@@ -134,9 +136,17 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
                     last_exc = exc
                     break
             else:
-                break
+                # 403 with quota remaining = permanent error (private repo,
+                # bad token, org restriction). Raise immediately — no point
+                # burning backoff retries on a definitive access denial.
+                raise RuntimeError(
+                    f"Permanent 403 from {url}: {resp.text[:200]}"
+                )
 
         if resp.status_code == 200:
+            # Proactive check: if remaining quota is critically low, sleep
+            # before returning so the *next* call doesn't hit the wall.
+            _maybe_wait_for_reset(resp)
             try:
                 return resp.json()
             except ValueError as exc:
@@ -166,21 +176,30 @@ def _maybe_wait_for_reset(resp: requests.Response) -> None:
 
 
 def _wait_for_reset(resp: requests.Response, label: str = "") -> None:
-    """Sleep until X-RateLimit-Reset (plus safety margin)."""
+    """Sleep until X-RateLimit-Reset (plus safety margin), printing an ETA countdown."""
+    import sys
+
     reset_str = resp.headers.get("X-RateLimit-Reset")
     if reset_str:
         try:
             reset_ts = int(reset_str)
             wait = max(0, reset_ts - time.time()) + 5
-            logger.info("Rate limit hit (%s); sleeping %.0fs until reset", label, wait)
-            time.sleep(wait)
-            return
         except ValueError:
-            pass
+            wait = 60.0
+    else:
+        wait = 60.0
 
-    # Fallback: sleep 60s if no reset header
-    logger.info("Rate limit hit (%s); no reset header, sleeping 60s", label)
-    time.sleep(60)
+    logger.info("Rate limit hit (%s); waiting %.0fs until reset", label, wait)
+
+    deadline = time.monotonic() + wait
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        print(f"\r  rate-limit cooldown: {remaining:.0f}s remaining…  ", end="", flush=True, file=sys.stderr)
+        time.sleep(min(1.0, remaining))
+
+    print(f"\r  rate-limit cooldown: done.{' ' * 20}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +207,12 @@ def _wait_for_reset(resp: requests.Response, label: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 _GITHUB_HOST = "github.com"
+
+# Known GitHub owner renames — applied during URL normalization so that old
+# and new repo names produce the same canonical key.
+_GITHUB_REDIRECTS: dict[str, str] = {
+    "github.com/clawdbot/": "github.com/openclaw/",
+}
 
 # Path segments that indicate we're inside a repo subtree, not the repo root
 _SUBTREE_SEGMENTS = frozenset(
@@ -248,7 +273,15 @@ def extract_github_url(url: str) -> str | None:
     if not owner or not repo:
         return None
 
-    return f"https://github.com/{owner}/{repo}".lower()
+    result = f"https://github.com/{owner}/{repo}".lower()
+
+    # Apply known GitHub renames (e.g. clawdbot/ → openclaw/)
+    for old, new in _GITHUB_REDIRECTS.items():
+        if old in result:
+            result = result.replace(old, new, 1)
+            break
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -311,3 +344,217 @@ def load_existing_urls(output_path: str) -> set[str]:
             except (json.JSONDecodeError, AttributeError):
                 continue
     return urls
+
+
+# ---------------------------------------------------------------------------
+# Trees API helper — find SKILL.md paths
+# ---------------------------------------------------------------------------
+
+def find_skill_md_paths(session, repo_full_name: str) -> list[str]:
+    """Return all paths to SKILL.md files in a repo.
+
+    Primary: recursive Trees API (one request, fast).
+    Fallback: Code Search API scoped to the repo — used when the tree is
+    truncated (GitHub caps the recursive tree at 100,000 nodes, so very large
+    monorepos like openclaw/skills silently omit files beyond that point).
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+
+    Returns:
+        List of paths (e.g. ["SKILL.md", "skills/context/SKILL.md"]).
+        Empty list if the repo is not found or has no SKILL.md files.
+    """
+    url = f"{GITHUB_API}/repos/{repo_full_name}/git/trees/HEAD"
+    try:
+        data = github_get(session, url, params={"recursive": "1"})
+    except RuntimeError as exc:
+        logger.debug("Could not fetch tree for %s: %s", repo_full_name, exc)
+        return []
+
+    if not data or "tree" not in data:
+        return []
+
+    paths = [
+        item["path"]
+        for item in data["tree"]
+        if item.get("type") == "blob" and item.get("path", "").endswith("SKILL.md")
+    ]
+
+    if data.get("truncated"):
+        logger.debug(
+            "Tree truncated for %s (%d paths so far); falling back to code search",
+            repo_full_name, len(paths),
+        )
+        paths = _find_skill_md_via_search(session, repo_full_name)
+
+    return paths
+
+
+def _find_skill_md_via_search(session, repo_full_name: str) -> list[str]:
+    """Find SKILL.md paths via Code Search API, scoped to one repo.
+
+    Used as a fallback when the Trees API returns a truncated result.
+    Code Search paginates properly and is not subject to the 100k-node cap.
+    Capped at GitHub's 1000-result search limit per query.
+    """
+    import time as _time
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    page = 1
+
+    while True:
+        params = {
+            "q": f"filename:SKILL.md repo:{repo_full_name}",
+            "per_page": 100,
+            "page": page,
+        }
+        try:
+            data = github_get(session, f"{GITHUB_API}/search/code", params=params)
+        except RuntimeError as exc:
+            logger.warning("Code search fallback failed for %s: %s", repo_full_name, exc)
+            break
+
+        items = data.get("items", [])
+        for item in items:
+            p = item.get("path", "")
+            if p and p not in seen:
+                seen.add(p)
+                paths.append(p)
+
+        total = data.get("total_count", 0)
+        if not items or page * 100 >= min(total, 1000):
+            break
+
+        page += 1
+        _time.sleep(2)  # Code Search rate limit: 10 req/min authenticated
+
+    logger.debug("Code search found %d SKILL.md paths in %s", len(paths), repo_full_name)
+    return paths
+
+
+# ---------------------------------------------------------------------------
+# Filter cache
+# ---------------------------------------------------------------------------
+
+def load_filter_cache(path: str) -> set[str]:
+    """Load the set of canonical repo URLs that have been filtered out.
+
+    Args:
+        path: Path to the filter cache JSONL file.  If the file does not
+              exist, an empty set is returned.
+
+    Returns:
+        Set of canonical repo URL strings from the cache.
+    """
+    import pathlib
+    p = pathlib.Path(path)
+    if not p.exists():
+        return set()
+
+    urls: set[str] = set()
+    with p.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                url = record.get("url")
+                if url:
+                    urls.add(url)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+    return urls
+
+
+def add_to_filter_cache(path: str, repo_url: str, reason: str) -> None:
+    """Append a filtered repo URL and reason to the cache file.
+
+    Args:
+        path:     Path to the filter cache JSONL file.
+        repo_url: Canonical GitHub repo URL.
+        reason:   Why this repo was filtered (e.g. "no_skill_md",
+                  "stars_below_threshold", "not_a_skill").
+    """
+    import pathlib
+    from datetime import datetime, timezone
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "url": repo_url,
+        "reason": reason,
+        "filtered_at": (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        ),
+    }
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# GitHub repo metadata
+# ---------------------------------------------------------------------------
+
+def fetch_repo_metadata(session, repo_full_name: str) -> dict:
+    """Fetch metadata for a single repo from the GitHub Repos API.
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+
+    Returns:
+        Dict with keys: stargazers_count, pushed_at, topics, description,
+        default_branch.  Returns an empty dict on error.
+    """
+    try:
+        data = github_get(session, f"{GITHUB_API}/repos/{repo_full_name}")
+    except RuntimeError as exc:
+        logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
+        return {}
+
+    return {
+        "stargazers_count": data.get("stargazers_count", 0),
+        "pushed_at": data.get("pushed_at", ""),
+        "topics": data.get("topics", []),
+        "description": data.get("description", ""),
+        "default_branch": data.get("default_branch", "main"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Platform inference
+# ---------------------------------------------------------------------------
+
+def infer_platforms(frontmatter: dict, source: str) -> list[str]:
+    """Infer target platforms from frontmatter and source.
+
+    Priority:
+    1. Explicit ``platforms`` list in frontmatter.
+    2. Codex-specific keys (``codex_context``, ``target == "codex"``).
+    3. Source-based defaults.
+
+    Args:
+        frontmatter: Parsed YAML frontmatter dict (may be empty).
+        source:      Crawler source name (skillsmp, clawhub, marketplace, skillhub).
+
+    Returns:
+        List of platform strings.
+    """
+    if "platforms" in frontmatter:
+        raw = frontmatter["platforms"]
+        if isinstance(raw, list):
+            return [str(p) for p in raw if p]
+    if "codex_context" in frontmatter or frontmatter.get("target") == "codex":
+        return ["codex"]
+    defaults = {
+        "skillsmp": ["claude_code"],
+        "clawhub": ["openclaw"],   # ClawHub is OpenClaw's registry; claude_code only if frontmatter says so
+        "marketplace": ["claude_code"],
+        "skillhub": ["claude_code"],
+    }
+    return defaults.get(source, ["claude_code"])

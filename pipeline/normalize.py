@@ -6,9 +6,8 @@ Steps:
   2. Compute canonical URL keys and group records by them.
   3. Merge metadata using priority rules.
   4. Apply quality filter (drop low-quality records without description or signals).
-  5. Apply safety flag based on clawhub safety_scan field.
-  6. Build embedding_text and assign stable SHA-256 IDs.
-  7. Write unified JSONL output; raise QualityGateError if count < min_skills.
+  5. Build embedding_text and assign stable SHA-256 IDs.
+  6. Write unified JSONL output; raise QualityGateError if count < min_skills.
 """
 
 from __future__ import annotations
@@ -78,8 +77,6 @@ def build_embedding_text(skill: dict) -> str:
     Format::
 
         "{name}. {description} Categories: {cat1, cat2}."
-        # and optionally, when triggers are non-empty:
-        " Use when: {t1; t2}."
 
     Raises:
         ValueError: if name or description are missing/empty.
@@ -93,12 +90,7 @@ def build_embedding_text(skill: dict) -> str:
         raise ValueError("skill must have a non-empty 'description'")
 
     categories = skill.get("categories", [])
-    triggers = skill.get("triggers", [])
-
-    text = f"{name}. {description} Categories: {', '.join(categories)}."
-    if triggers:
-        text += f" Use when: {'; '.join(triggers)}."
-    return text
+    return f"{name}. {description} Categories: {', '.join(categories)}."
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +104,8 @@ def merge_records(records: list[dict]) -> dict:
     - ``source``: collect all unique source names as a list.
     - ``stars``: take the maximum value across records.
     - ``pushed_at`` / ``last_updated``: take the latest (lexicographic max of ISO dates).
-    - ``safety_scan``: prefer the value from the ``clawhub`` record.
     - ``skillhub_rank`` / ``skillhub_score``: take from the ``skillhub`` record.
-    - ``categories`` / ``topics``: union of all values across records.
+    - ``categories``: union of all values across records.
     - ``description``: prefer the longest non-empty description.
     - ``name``: take from the first record with a non-empty name.
     - ``repo_url``: use the canonical form.
@@ -134,13 +125,15 @@ def merge_records(records: list[dict]) -> dict:
 
     stars = 0
     last_updated: str | None = None
-    safety_scan: str | None = None
     skillhub_rank: str | None = None
     skillhub_score: float | None = None
     categories: set[str] = set()
     triggers: list[str] = []
     description = ""
     name = ""
+    platforms: set[str] = set()
+    skill_md_url: str = ""
+    safety_scan: bool | None = None
 
     for rec in records:
         src = rec.get("source", "")
@@ -169,7 +162,7 @@ def merge_records(records: list[dict]) -> dict:
             if last_updated is None or rec_pushed > last_updated:
                 last_updated = rec_pushed
 
-        # Categories and topics — union
+        # Categories — union across all records
         for cat in meta.get("categories", []):
             if cat:
                 categories.add(cat)
@@ -193,6 +186,17 @@ def merge_records(records: list[dict]) -> dict:
             if meta.get("overall_score") is not None:
                 skillhub_score = meta["overall_score"]
 
+        # Platforms — union across all records
+        for plat in meta.get("platforms", []):
+            if plat:
+                platforms.add(plat)
+
+        # skill_md_url — take first non-empty value
+        if not skill_md_url:
+            candidate = meta.get("skill_md_url", "")
+            if candidate:
+                skill_md_url = candidate
+
     return {
         "id": skill_id(canon_url),
         "repo_url": canon_url,
@@ -201,13 +205,14 @@ def merge_records(records: list[dict]) -> dict:
         "source": sources_seen,
         "categories": sorted(categories),
         "triggers": triggers,
+        "platforms": sorted(platforms),
+        "skill_md_url": skill_md_url,
+        "safety_scan": safety_scan,
         "install_cmd": {},          # populated separately by build_install_cmds
         "quality": {
             "stars": stars,
             "skillhub_rank": skillhub_rank,
             "skillhub_score": skillhub_score,
-            "safety_scan": safety_scan,
-            "safety_flag": False,
             "last_updated": last_updated,
         },
         "embedding_text": "",       # populated after merge by build_embedding_text
@@ -242,6 +247,9 @@ def build_install_cmds(merged: dict) -> dict[str, str]:
             cmds["claude_code"] = f"/skill install {name}"
         # skillhub: no install command
 
+    if "codex" in merged.get("platforms", []):
+        cmds["codex"] = "cp SKILL.md ~/.codex/skills/"
+
     return cmds
 
 
@@ -253,7 +261,7 @@ def passes_quality_filter(skill: dict) -> bool:
     """Return True if the merged skill record passes the quality bar.
 
     A skill passes if ANY of the following conditions holds:
-    1. ``quality.stars`` >= 2
+    1. ``quality.stars`` >= 10
     2. At least one source is in CURATED_SOURCES
     3. ``quality.skillhub_rank`` is "A" or "S"
 
@@ -269,7 +277,7 @@ def passes_quality_filter(skill: dict) -> bool:
     skillhub_rank = quality.get("skillhub_rank")
     sources: list[str] = skill.get("source", [])
 
-    if stars >= 2:
+    if stars >= 10:
         return True
     if any(src in CURATED_SOURCES for src in sources):
         return True
@@ -277,30 +285,6 @@ def passes_quality_filter(skill: dict) -> bool:
         return True
 
     return False
-
-
-# ---------------------------------------------------------------------------
-# Safety flag
-# ---------------------------------------------------------------------------
-
-def apply_safety_flag(skill: dict) -> dict:
-    """Return a copy of skill with ``quality.safety_flag`` set correctly.
-
-    The flag is set to True only when the skill has ``clawhub`` as a source
-    AND ``quality.safety_scan`` contains the word "warning" (case-insensitive).
-
-    Does NOT mutate the input dict.
-    """
-    result = {**skill, "quality": {**skill.get("quality", {})}}
-    sources: list[str] = result.get("source", [])
-
-    if "clawhub" in sources:
-        safety_scan = result["quality"].get("safety_scan", "") or ""
-        result["quality"]["safety_flag"] = "warning" in safety_scan.lower()
-    else:
-        result["quality"]["safety_flag"] = False
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -372,9 +356,6 @@ def normalize(
             merged["embedding_text"] = build_embedding_text(merged)
         except ValueError:
             continue
-
-        # Apply safety flag (returns a shallow copy; reassign)
-        merged = apply_safety_flag(merged)
 
         output_records.append(merged)
 
