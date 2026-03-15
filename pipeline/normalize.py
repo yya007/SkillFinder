@@ -158,6 +158,7 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
     platforms: set[str] = set()
     skill_md_url: str = ""
     safety_scan: bool | None = None
+    is_official = False  # True only for anthropics/* marketplace skills
 
     for rec in records:
         src = rec.get("source", "")
@@ -199,6 +200,10 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
             if trigger and trigger not in triggers:
                 triggers.append(trigger)
 
+        # Official marketplace flag — set if any marketplace record is from anthropics/*
+        if src == "marketplace" and meta.get("official"):
+            is_official = True
+
         # Safety scan — prefer clawhub
         if src == "clawhub" and meta.get("safety_scan") is not None:
             safety_scan = meta["safety_scan"]
@@ -232,6 +237,7 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
         "platforms": sorted(platforms),
         "skill_md_url": skill_md_url,
         "safety_scan": safety_scan,
+        "is_official": is_official,
         "install_cmd": {},          # populated separately by build_install_cmds
         "quality": {
             "stars": stars,
@@ -251,24 +257,33 @@ def build_install_cmds(merged: dict) -> dict[str, str]:
     """Generate platform → install command mapping from merged source list.
 
     Rules (later sources can overwrite earlier for the same platform key):
-    - ``skillsmp``   → ``claude_code: /plugin install {name}``
-    - ``clawhub``    → ``claude_code: /plugin install {name}``,
-                        ``openclaw: clawhub install {name}``
-    - ``marketplace`` → ``claude_code: /skill install {name}``
-    - ``skillhub``   → (metadata only — no install command)
+    - ``skillsmp``             → ``claude_code: /plugin install {name}``
+    - ``clawhub``              → ``openclaw: clawhub install {name}`` only.
+                                  No claude_code command: clawhub is the OpenClaw registry;
+                                  /plugin install pulls from SkillsMP and would silently fail.
+    - ``marketplace`` official → ``claude_code: /skill install {name}``
+                                  (only anthropics/* repos; these are registered in the
+                                  Anthropic official marketplace)
+    - ``marketplace`` community→ ``claude_code: /plugin install {name}``
+                                  (community repos like alirezarezvani/claude-skills are not
+                                  registered in the official marketplace; /skill install fails)
+    - ``skillhub``             → (metadata only — no install command)
     """
     name = merged["name"]
     sources: list[str] = merged.get("source", [])
+    is_official: bool = merged.get("is_official", False)
     cmds: dict[str, str] = {}
 
     for src in sources:
         if src == "skillsmp":
             cmds["claude_code"] = f"/plugin install {name}"
         elif src == "clawhub":
-            cmds["claude_code"] = f"/plugin install {name}"
             cmds["openclaw"] = f"clawhub install {name}"
         elif src == "marketplace":
-            cmds["claude_code"] = f"/skill install {name}"
+            if is_official:
+                cmds["claude_code"] = f"/skill install {name}"
+            else:
+                cmds["claude_code"] = f"/plugin install {name}"
         # skillhub: no install command
 
     if "codex" in merged.get("platforms", []):
@@ -376,8 +391,9 @@ def normalize(
         if not passes_quality_filter(merged):
             continue
 
-        # Build install commands
+        # Build install commands, then discard is_official (pipeline-only flag)
         merged["install_cmd"] = build_install_cmds(merged)
+        merged.pop("is_official", None)
 
         # Build embedding text (skip records that still lack name/description
         # after merging — shouldn't happen after quality filter, but be safe)

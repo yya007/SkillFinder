@@ -42,7 +42,6 @@ from crawlers.base import (
     find_skill_md_paths,
     github_get,
     infer_platforms,
-    load_existing_urls,
     make_session,
     write_jsonl,
 )
