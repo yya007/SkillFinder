@@ -154,28 +154,39 @@ def apply_filters(
     candidates: list[dict],
     platforms: list[str],
     sources: list[str],
+    min_stars: int = 0,
+    safety_only: bool = False,
 ) -> list[dict]:
     """Filter a list of candidate skill dicts.
 
     Filters are AND-ed together; multi-value filters (platforms, sources)
     are OR-ed internally. Input order is preserved.
 
-    - platforms: keep skills where install_cmd has at least one matching key
+    - platforms: keep skills where the ``platforms`` list has at least one matching value
     - sources: keep skills where skill["source"] contains at least one match
+    - min_stars: keep skills with quality.stars >= min_stars (0 = no filter)
+    - safety_only: keep only skills where safety_scan is True (ClawHub safety scan passed)
     """
     result = []
     for skill in candidates:
-        # Platform filter
-        if platforms:
-            available = set(skill.get("install_cmd", {}).keys())
-            if not available.intersection(platforms):
-                continue
+        # Platform filter — uses the normalized ``platforms`` list field so that
+        # SkillHub records (which have install_cmd: {}) are not silently excluded.
+        if platforms and not any(p in skill.get("platforms", []) for p in platforms):
+            continue
 
         # Source filter
         if sources:
             skill_sources = set(skill.get("source", []))
             if not skill_sources.intersection(sources):
                 continue
+
+        # Stars filter
+        if min_stars and skill.get("quality", {}).get("stars", 0) < min_stars:
+            continue
+
+        # Safety scan filter
+        if safety_only and skill.get("safety_scan") is not True:
+            continue
 
         result.append(skill)
     return result
@@ -192,12 +203,15 @@ def search(
     propose_n: int = 5,
     platforms: Optional[list[str]] = None,
     sources: Optional[list[str]] = None,
+    min_stars: int = 0,
+    safety_only: bool = False,
     ollama_url: str = OLLAMA_URL,
 ) -> list[dict]:
     """Search the FAISS index and return filtered candidates.
 
     Returns up to propose_n * 3 results, ordered by FAISS similarity score
-    (descending). sim_score is clamped to [0.0, 1.0].
+    (descending). sim_score is clamped to [0.0, 1.0] and is for agent-internal
+    use only (threshold checks, reranking) — do not expose to end users.
     """
     if platforms is None:
         platforms = []
@@ -231,7 +245,13 @@ def search(
         candidates.append(skill)
 
     # Apply attribute filters
-    filtered = apply_filters(candidates, platforms=platforms, sources=sources)
+    filtered = apply_filters(
+        candidates,
+        platforms=platforms,
+        sources=sources,
+        min_stars=min_stars,
+        safety_only=safety_only,
+    )
 
     # Return up to propose_n * 3 results
     return filtered[:candidate_count]
@@ -278,13 +298,17 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
         for i, r in enumerate(results, 1):
             name = r.get("name", "(unknown)")
             description = r.get("description", "")
-            sim_score = r.get("sim_score", 0.0)
             repo_url = r.get("repo_url", "")
-            lines.append(f"{i}. {name}  (score: {sim_score:.3f})")
+            stars = r.get("quality", {}).get("stars", 0) or 0
+            star_str = f"  ⭐ {stars:,}" if stars else ""
+            lines.append(f"{i}. {name}{star_str}")
             if description:
                 lines.append(f"   {description}")
             if repo_url:
                 lines.append(f"   {repo_url}")
+            install = r.get("install_cmd", {})
+            for platform, cmd in install.items():
+                lines.append(f"   [{platform}] {cmd}")
             lines.append("")
         return "\n".join(lines).rstrip()
 
@@ -330,6 +354,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Filter to skills from this registry "
             "(skillsmp, clawhub, skillhub, marketplace). Repeatable; values are OR-ed."
         ),
+    )
+    parser.add_argument(
+        "--min_stars",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Only return skills with at least this many GitHub stars (default: 0 = no filter).",
+    )
+    parser.add_argument(
+        "--safety_only",
+        action="store_true",
+        default=False,
+        help="Only return skills that passed the ClawHub safety scan.",
     )
     parser.add_argument(
         "--json",
@@ -388,6 +425,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         propose_n=args.propose,
         platforms=args.platforms,
         sources=args.sources,
+        min_stars=args.min_stars,
+        safety_only=args.safety_only,
     )
 
     # Format and print

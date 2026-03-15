@@ -116,24 +116,28 @@ def skills_for_search():
             name="k8s-deployer",
             description="Deploy Kubernetes clusters.",
             source=["skillsmp", "clawhub"],
+            platforms=["claude_code", "openclaw"],
             install_cmd={"claude_code": "/plugin install k8s-deployer", "openclaw": "clawhub install k8s-deployer"},
         ),
         make_skill(
             name="codex-helper",
             description="Help with OpenAI Codex tasks.",
             source=["skillsmp"],
+            platforms=["codex"],
             install_cmd={"codex": "cp SKILL.md ~/.codex/skills/"},
         ),
         make_skill(
             name="flagged-tool",
             description="A tool with a security warning.",
             source=["clawhub"],
+            platforms=["claude_code", "openclaw"],
             install_cmd={"claude_code": "/plugin install flagged-tool", "openclaw": "clawhub install flagged-tool"},
         ),
         make_skill(
             name="clawhub-only",
             description="Available only on OpenClaw.",
             source=["clawhub"],
+            platforms=["openclaw"],
             install_cmd={"openclaw": "clawhub install clawhub-only"},
         ),
     ]

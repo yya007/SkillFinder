@@ -76,7 +76,10 @@ def build_embedding_text(skill: dict) -> str:
 
     Format::
 
-        "{name}. {description} Categories: {cat1, cat2}."
+        "{name}. {description} Categories: {cat1, cat2}. Platforms: {p1, p2}. Triggers: {t1, t2}."
+
+    Platforms and triggers are included to improve recall for queries like
+    "claude code skill for X" or trigger-phrase matches.
 
     Raises:
         ValueError: if name or description are missing/empty.
@@ -90,14 +93,24 @@ def build_embedding_text(skill: dict) -> str:
         raise ValueError("skill must have a non-empty 'description'")
 
     categories = skill.get("categories", [])
-    return f"{name}. {description} Categories: {', '.join(categories)}."
+    platforms = skill.get("platforms", [])
+    triggers = skill.get("triggers", [])
+
+    parts = [f"{name}. {description}"]
+    if categories:
+        parts.append(f"Categories: {', '.join(categories)}.")
+    if platforms:
+        parts.append(f"Platforms: {', '.join(platforms)}.")
+    if triggers:
+        parts.append(f"Triggers: {', '.join(triggers[:5])}.")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # Record merging
 # ---------------------------------------------------------------------------
 
-def merge_records(records: list[dict]) -> dict:
+def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
     """Merge multiple raw records for the same canonical URL into one unified record.
 
     Priority rules:
@@ -110,6 +123,14 @@ def merge_records(records: list[dict]) -> dict:
     - ``name``: take from the first record with a non-empty name.
     - ``repo_url``: use the canonical form.
 
+    Args:
+        records:   One or more raw crawler records sharing the same dedup key.
+        dedup_key: The canonical key used to group these records. When provided
+                   (e.g. a ``skill_md_url`` for monorepo skills), it is used
+                   as the basis for the stable SHA-256 ``id`` so that two skills
+                   in the same monorepo never collide.  Defaults to
+                   ``canonical_key(records[0]["repo_url"])``.
+
     Raises:
         ValueError: if records is empty.
     """
@@ -118,6 +139,9 @@ def merge_records(records: list[dict]) -> dict:
 
     # Use canonical URL from the first record (all should share the same key)
     canon_url = canonical_key(records[0]["repo_url"])
+    # Stable ID key: prefer the caller-supplied dedup_key (e.g. skill_md_url for
+    # monorepo skills) so that every skill in a monorepo gets a unique ID.
+    id_key = dedup_key if dedup_key is not None else canon_url
 
     # Collect sources (preserve insertion order, deduplicate)
     sources_seen: list[str] = []
@@ -198,7 +222,7 @@ def merge_records(records: list[dict]) -> dict:
                 skill_md_url = candidate
 
     return {
-        "id": skill_id(canon_url),
+        "id": skill_id(id_key),
         "repo_url": canon_url,
         "name": name,
         "description": description,
@@ -334,14 +358,19 @@ def normalize(
                 if not repo_url:
                     logger.warning("Skipping record at %s:%d: missing repo_url", path, lineno)
                     continue
-                key = canonical_key(repo_url)
+                # For monorepo sources (ClawHub, Marketplace) every skill shares
+                # the same repo_url but has a unique skill_md_url.  Use
+                # skill_md_url as the dedup key when available so each skill
+                # becomes its own record rather than collapsing into one.
+                skill_md_url = record.get("raw_metadata", {}).get("skill_md_url", "")
+                key = canonical_key(skill_md_url) if skill_md_url else canonical_key(repo_url)
                 groups.setdefault(key, []).append(record)
 
     # ----------------------------------------------------------------- merge
     output_records: list[dict] = []
 
-    for _key, recs in groups.items():
-        merged = merge_records(recs)
+    for group_key, recs in groups.items():
+        merged = merge_records(recs, dedup_key=group_key)
 
         # Quality gate: drop records that don't meet the bar
         if not passes_quality_filter(merged):
@@ -375,3 +404,45 @@ def normalize(
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     return count
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    parser = argparse.ArgumentParser(
+        description="Normalize raw crawler JSONL files into a unified skill index."
+    )
+    parser.add_argument(
+        "raw_paths",
+        nargs="+",
+        metavar="RAW_FILE",
+        help="One or more raw crawler JSONL files.",
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default="data/unified_skills.jsonl",
+        metavar="OUTPUT",
+        help="Output path for unified JSONL (default: data/unified_skills.jsonl).",
+    )
+    parser.add_argument(
+        "--min-skills",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Minimum number of output records before raising an error (default: 1).",
+    )
+    args = parser.parse_args()
+
+    try:
+        count = normalize(args.raw_paths, args.output, min_skills=args.min_skills)
+        print(f"Wrote {count} skills to {args.output}")
+    except (FileNotFoundError, QualityGateError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
