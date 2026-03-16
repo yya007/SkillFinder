@@ -14,6 +14,11 @@ Ships as a skill for Claude Code, OpenClaw, and Codex.
 | Crawl (requires GITHUB_TOKEN) | `python -m crawlers.skillsmp_crawler -o data/raw/skillsmp.jsonl` |
 | Full pipeline | `pipeline/normalize.py → embed.py → build_index.py` |
 
+## Git Workflow
+
+- **Never push directly to `master`.** All changes must go through a pull request.
+- Create a feature branch, open a PR, and merge via GitHub.
+
 ## Conventions
 
 - **Stable IDs:** `sha256(skill_md_url)` for monorepo skills (multiple SKILL.md files in one repo, e.g. `anthropics/skills`), else `sha256(canonical_repo_url)`. Never sequential integers. **Note:** IDs for monorepo skills changed in this release — see BACKLOG.md §"Document monorepo ID change".
