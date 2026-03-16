@@ -103,6 +103,18 @@ When this skill triggers, follow this workflow exactly.
 > `--platform openclaw` when running as OpenClaw, `--platform codex` when running
 > as Codex. Always honour an explicit platform request from the user.
 
+### Step 0 — Check availability
+
+Before reformulating the query, verify the index and Ollama are available by running:
+```bash
+python scripts/search.py "test" --json
+```
+If this fails with `OllamaNotAvailableError` or `FileNotFoundError`, offer the user:
+> "Local search is unavailable. I can fall back to a GitHub code search (unranked,
+>  no quality signals). Set GITHUB_TOKEN for best results. Continue?"
+
+If yes, add `--remote` to all search commands in Steps 2–3.
+
 ### Step 1 — Reformulate the query
 
 Before searching, rewrite the user's request into a concise, keyword-rich search

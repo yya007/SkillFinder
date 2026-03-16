@@ -323,6 +323,7 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
             item["platforms"] = r.get("platforms", [])
             item["install_cmd"] = r.get("install_cmd", {})
             item["quality"] = r.get("quality", {})
+            item["safety_scan_date"] = r.get("safety_scan_date")
             output_items.append(item)
         return json.dumps({"results": output_items}, indent=2)
     else:
@@ -335,7 +336,10 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
             skill_url = r.get("skill_md_url", "") or r.get("repo_url", "")
             stars = r.get("quality", {}).get("stars", 0) or 0
             star_str = f"  ⭐ {stars:,}" if stars else ""
-            lines.append(f"{i}. {name}{star_str}")
+            safety_scan = r.get("safety_scan")
+            safety_scan_date = r.get("safety_scan_date")
+            scan_str = f"  🛡 scanned {safety_scan_date}" if safety_scan and safety_scan_date else ""
+            lines.append(f"{i}. {name}{star_str}{scan_str}")
             if description:
                 lines.append(f"   {description}")
             if skill_url:
@@ -345,6 +349,68 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
                 lines.append(f"   [{platform}] {cmd}")
             lines.append("")
         return "\n".join(lines).rstrip()
+
+
+# ---------------------------------------------------------------------------
+# Remote GitHub code search fallback
+# ---------------------------------------------------------------------------
+
+def github_code_search_fallback(query: str, token: Optional[str] = None) -> list[dict]:
+    """Search GitHub Code Search for SKILL.md files matching *query*.
+
+    Used when the local FAISS index or Ollama is unavailable.  Results are
+    unranked and carry no quality signals.
+
+    Args:
+        query: Natural language query terms to append to the base filename filter.
+        token: GitHub personal access token.  Uses GITHUB_TOKEN env var if None.
+
+    Returns:
+        List of result dicts shaped like local search output (no sim_score).
+        Each item includes ``source: ["remote"]`` to distinguish from local results.
+    """
+    token = token or os.environ.get("GITHUB_TOKEN")
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    search_query = f"filename:SKILL.md {query}"
+    try:
+        resp = requests.get(
+            "https://api.github.com/search/code",
+            params={"q": search_query, "per_page": 30},
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(f"GitHub code search failed: {exc}") from exc
+
+    items = resp.json().get("items", [])
+    results: list[dict] = []
+    seen_repos: set[str] = set()
+
+    for item in items:
+        repo = item.get("repository", {})
+        full_name = repo.get("full_name", "")
+        if not full_name or full_name in seen_repos:
+            continue
+        seen_repos.add(full_name)
+
+        repo_url = f"https://github.com/{full_name}".lower()
+        results.append({
+            "name": repo.get("name", full_name.split("/")[-1]),
+            "description": repo.get("description") or "",
+            "repo_url": repo_url,
+            "skill_md_url": "",
+            "source": ["remote"],
+            "platforms": [],
+            "install_cmd": {},
+            "quality": {},
+            "safety_scan_date": None,
+        })
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +487,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="DATA_DIR",
         help="Path to directory containing index.faiss and metadata.jsonl.",
     )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        default=False,
+        help=(
+            "Use GitHub code search instead of the local FAISS index "
+            "(unranked, no quality signals). Also activated automatically "
+            "when the local index or Ollama is unavailable."
+        ),
+    )
     parser.epilog = (
         "NOTE: This script returns a raw candidate pool. For best results invoke "
         "SkillFinder through your agent (Claude Code, OpenClaw, or Codex), which "
@@ -433,12 +509,38 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
+    # Remote-only mode: skip local index entirely
+    if args.remote:
+        print(
+            "[!] Local index unavailable — showing remote GitHub code search results "
+            "(unranked, no quality signals).",
+            file=sys.stderr,
+        )
+        try:
+            results = github_code_search_fallback(args.query)
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(format_results(results, as_json=args.as_json))
+        return 0
+
     # Start Ollama if not already running; remember the process so we can stop it
+    ollama_proc = None
     try:
         ollama_proc = ensure_ollama()
     except OllamaNotAvailableError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        print(
+            f"[!] Local search unavailable ({exc})\n"
+            "[!] Falling back to remote GitHub code search (unranked, no quality signals).",
+            file=sys.stderr,
+        )
+        try:
+            results = github_code_search_fallback(args.query)
+        except RuntimeError as remote_exc:
+            print(f"Error: {remote_exc}", file=sys.stderr)
+            return 1
+        print(format_results(results, as_json=args.as_json))
+        return 0
 
     try:
         # Load index
@@ -448,13 +550,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             index, metadata = load_index(index_path, metadata_path)
         except FileNotFoundError as exc:
             print(
-                f"Error: {exc}\n"
-                "The index files should be included in the repository.\n"
-                "If you used a shallow clone, try: git fetch --unshallow\n"
-                "To download the latest index manually: python scripts/update_index.py",
+                f"[!] Local index unavailable ({exc})\n"
+                "[!] Falling back to remote GitHub code search (unranked, no quality signals).",
                 file=sys.stderr,
             )
-            return 1
+            try:
+                results = github_code_search_fallback(args.query)
+            except RuntimeError as remote_exc:
+                print(f"Error: {remote_exc}", file=sys.stderr)
+                return 1
+            print(format_results(results, as_json=args.as_json))
+            return 0
         except AlignmentError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
