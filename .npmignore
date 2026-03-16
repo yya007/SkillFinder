@@ -12,7 +12,6 @@ data/
 .ruff_cache/
 pytest.ini
 requirements-dev.txt
-requirements-ci.txt
 
 # Project meta (dev-only)
 BACKLOG.md

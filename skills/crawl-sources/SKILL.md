@@ -29,7 +29,7 @@ searchable index.
 ## Prerequisites
 
 - `GITHUB_TOKEN` env var set (required by SkillsMP, ClawHub, and topic crawlers)
-- Python dependencies installed: `pip install -r requirements-ci.txt`
+- Python dependencies installed: `pip install -r requirements-dev.txt`
 
 ## Agent Instructions
 

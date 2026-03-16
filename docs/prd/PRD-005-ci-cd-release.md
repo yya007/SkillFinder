@@ -39,7 +39,7 @@ The pre-built FAISS index is the core value delivery of SkillFinder. Without an 
 
 1. **Checkout** repo
 2. **Setup Python 3.11**
-3. **Install dependencies** (`pip install -r requirements-ci.txt`)
+3. **Install dependencies** (`pip install -r requirements-dev.txt`)
 4. **Crawl all sources** (parallel where possible):
    - `skillsmp_crawler.py` (longest, ~30min)
    - `clawhub_crawler.py` (~5min)
@@ -165,7 +165,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements-ci.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Crawl all sources (parallel)
         env:
@@ -274,7 +274,7 @@ print(f"OK: {current_count} skills (prev: {prev_count})")
 
 ---
 
-## CI Dependencies (`requirements-ci.txt`)
+## CI Dependencies (`requirements-dev.txt`)
 
 ```
 # Crawler deps

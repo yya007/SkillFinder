@@ -693,6 +693,7 @@ def run(
 
         if len(batch) >= 50:
             written += write_jsonl(batch, output_path, append=(written > 0 or resume))
+            log.info("Written %d records so far to %s", written, output_path)
             batch = []
 
     if batch:

@@ -26,7 +26,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements-ci.txt
+        run: pip install -r requirements-dev.txt
 
       # ── Phase 1: Crawl all registries in parallel ─────────────────────────
       - name: Crawl all sources (parallel)
