@@ -114,9 +114,9 @@ This embeds all skills via Ollama. Can take 30–60 min for 20K+ skills.
 python pipeline/build_index.py \
   --embeddings data/embeddings.npy \
   --skills data/unified_skills.jsonl \
-  --out-index data/index.faiss \
-  --out-meta data/metadata.jsonl \
-  --out-version data/version.txt
+  --out-index skill/data/index.faiss \
+  --out-meta skill/data/metadata.jsonl \
+  --out-version skill/data/version.txt
 ```
 
 ---
@@ -133,7 +133,7 @@ python pipeline/update_docs.py
 
 ### Step 7 — Report
 
-Read `data/version.txt` and report:
+Read `skill/data/version.txt` and report:
 - New skill count
 - Source breakdown
 - Index build date

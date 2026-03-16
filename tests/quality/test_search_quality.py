@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
+DATA_DIR = Path(__file__).parent.parent.parent / "skill" / "data"
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 INDEX_PATH = DATA_DIR / "index.faiss"
 METADATA_PATH = DATA_DIR / "metadata.jsonl"

@@ -152,17 +152,18 @@ jobs:
             --pattern "*.tar.gz" \
             --dir /tmp/prev-index \
             --repo "${{ github.repository }}"
-          tar -xzf /tmp/prev-index/*.tar.gz -C data/
-          echo "Previous index extracted: $(wc -l < data/metadata.jsonl) skills"
+          mkdir -p skill/data
+          tar -xzf /tmp/prev-index/*.tar.gz -C skill/data/
+          echo "Previous index extracted: $(wc -l < skill/data/metadata.jsonl) skills"
 
       - name: Incremental embed and append
         if: env.INCREMENTAL == 'true'
         run: |
           python pipeline/incremental_update.py \
             --new-skills data/unified_skills.jsonl \
-            --index      data/index.faiss \
-            --metadata   data/metadata.jsonl \
-            --version    data/version.txt
+            --index      skill/data/index.faiss \
+            --metadata   skill/data/metadata.jsonl \
+            --version    skill/data/version.txt
 
       # ── Phase 6b: Full rebuild path ───────────────────────────────────────
       - name: Full embed (all skills via Ollama)
@@ -179,9 +180,9 @@ jobs:
           python pipeline/build_index.py \
             --embeddings  data/embeddings.npy \
             --skills      data/unified_skills_ordered.jsonl \
-            --out-index   data/index.faiss \
-            --out-meta    data/metadata.jsonl \
-            --out-version data/version.txt \
+            --out-index   skill/data/index.faiss \
+            --out-meta    skill/data/metadata.jsonl \
+            --out-version skill/data/version.txt \
             --embed-model qwen3-embedding:0.6b
 
       # ── Phase 7: Post-build quality gate ──────────────────────────────────
@@ -196,9 +197,9 @@ jobs:
           DATE=$(date +%Y%m%d)
           ARTIFACT="skill-finder-index-${DATE}.tar.gz"
           tar -czf "$ARTIFACT" \
-            data/index.faiss data/metadata.jsonl data/version.txt
+            -C skill/data index.faiss metadata.jsonl version.txt
           SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
-          FINAL_COUNT=$(wc -l < data/metadata.jsonl)
+          FINAL_COUNT=$(wc -l < skill/data/metadata.jsonl)
           {
             echo "ARTIFACT=$ARTIFACT"
             echo "SHA256=$SHA"

@@ -43,38 +43,36 @@ Want me to fetch the full SKILL.md for any of these before you install?
 
 ### Install
 
-**npm (minimal install — recommended)**
-
-Install only the runtime files (no crawlers, tests, or CI tooling):
+**npm (recommended)**
 
 ```bash
 npm install -g @yya007/skill-finder
-pip install -r "$(npm root -g)/@yya007/skill-finder/scripts/requirements.txt"
+pip install -r "$(npm root -g)/@yya007/skill-finder/skill/scripts/requirements.txt"
 ollama pull qwen3-embedding:0.6b
-python "$(npm root -g)/@yya007/skill-finder/scripts/update_index.py"
+python "$(npm root -g)/@yya007/skill-finder/skill/scripts/update_index.py"
 ```
 
-Then copy the skill to your agent's skills directory:
+Copy just the runtime `skill/` directory to your agent's skills folder:
 
 ```bash
 # Claude Code
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
+cp -r "$(npm root -g)/@yya007/skill-finder/skill" ~/.claude/skills/skill-finder
 
 # Codex
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder
+cp -r "$(npm root -g)/@yya007/skill-finder/skill" ~/.codex/skills/skill-finder
 ```
 
-**Claude Code (git clone)**
+**Claude Code (sparse clone — no dev tooling)**
 
 ```bash
-git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
+git clone --filter=blob:none --sparse https://github.com/yya007/SkillFinder /tmp/skillfinder
+cd /tmp/skillfinder && git sparse-checkout set skill
+cp -r skill ~/.claude/skills/skill-finder
 pip install -r ~/.claude/skills/skill-finder/scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
 
-The index is included in the repository. When using an agent like Claude, just ask: _"find a skill for X"_
-
-The agent will auto-invoke SkillFinder when you ask to find or search for skills.
+The index is included. When using Claude Code, just ask: _"find a skill for X"_
 
 **OpenClaw**
 
@@ -83,10 +81,12 @@ clawhub install skill-finder
 ollama pull qwen3-embedding:0.6b
 ```
 
-**Codex**
+**Codex (sparse clone)**
 
 ```bash
-git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
+git clone --filter=blob:none --sparse https://github.com/yya007/SkillFinder /tmp/skillfinder
+cd /tmp/skillfinder && git sparse-checkout set skill
+cp -r skill ~/.codex/skills/skill-finder
 pip install -r ~/.codex/skills/skill-finder/scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
@@ -267,7 +267,7 @@ Calls local Ollama (`qwen3-embedding:0.6b`) to embed all skills. Writes `data/em
 python pipeline/build_index.py
 ```
 
-Produces `data/index.faiss` and `data/metadata.jsonl`. These are the runtime index files committed to the repo and also published as a GitHub Release artifact for weekly updates.
+Produces `skill/data/index.faiss` and `skill/data/metadata.jsonl`. These are the runtime index files committed to the repo under `skill/data/` and also published as a GitHub Release artifact for weekly updates.
 
 ### Run tests
 
@@ -275,7 +275,7 @@ Produces `data/index.faiss` and `data/metadata.jsonl`. These are the runtime ind
 # Unit + integration tests (no Ollama or network required)
 pytest tests/ -v
 
-# Full quality benchmark (requires data/index.faiss and Ollama running)
+# Full quality benchmark (requires skill/data/index.faiss and Ollama running)
 pytest tests/quality/ -v -m quality
 ```
 

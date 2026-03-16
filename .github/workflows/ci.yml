@@ -21,7 +21,7 @@ jobs:
         run: pip install -r requirements-dev.txt ruff
 
       - name: Lint
-        run: ruff check scripts/ pipeline/ crawlers/
+        run: ruff check skill/scripts/ pipeline/ crawlers/
 
       - name: Test
         run: pytest

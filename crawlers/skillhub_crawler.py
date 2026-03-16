@@ -20,7 +20,9 @@ import json
 import logging
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.robotparser import RobotFileParser
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -53,6 +55,7 @@ SKILLHUB_BASE = "https://skillhub.club"
 _SKILLS_LIST_PATH = "/skills"         # listing endpoint; ?category=X&page=N for pagination
 _REQUEST_DELAY = 0.5                  # seconds between HTTP requests (polite crawl)
 _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfinder)"
+_ENRICH_WORKERS = 4                   # concurrent workers for detail-page + GitHub API enrichment
 
 log = logging.getLogger(__name__)
 
@@ -230,12 +233,24 @@ def get_skill_list_page(session, page: int = 1, category: str = "") -> tuple[lis
                 rank = rank_tag.get_text(strip=True)
                 break
 
+        # --- extract overall_score from listing card (shown as e.g. "9.0" next to rank badge) ---
+        listing_score = 0.0
+        for span in card.find_all("span", class_="font-bold"):
+            try:
+                val = float(span.get_text(strip=True))
+                if 0.0 < val <= 10.0:
+                    listing_score = val
+                    break
+            except ValueError:
+                continue
+
         skills.append(
             {
                 "name": name,
                 "skillhub_url": href,
                 "description": description,
                 "rank": rank,
+                "listing_score": listing_score,
             }
         )
 
@@ -461,6 +476,99 @@ def load_existing_skillhub_urls(output_path: str) -> set[str]:
     }
 
 
+def _enrich_skill(
+    basic: dict,
+    session,
+    github_session,
+    filter_cache: set,
+    filter_cache_path: str | None,
+    repo_paths_cache: dict,
+    lock: threading.Lock,
+) -> dict | None:
+    """Fetch detail page and GitHub metadata for one skill card.
+
+    Designed to be called from a thread pool — all mutations to shared state
+    (filter_cache, repo_paths_cache) are guarded by *lock*.
+
+    Returns a unified skill dict, or None if the skill should be skipped.
+    """
+    skillhub_url = basic["skillhub_url"]
+
+    try:
+        detail = get_skill_detail(session, skillhub_url) or {}
+    except Exception as exc:
+        log.warning("Failed detail page %s: %s", skillhub_url, exc)
+        detail = {}
+
+    github_url = detail.get("github_url", "")
+
+    with lock:
+        if github_url and github_url in filter_cache:
+            log.debug("Skipping %s: in filter cache", github_url)
+            return None
+
+    stars = 0
+    pushed_at = ""
+    skill_md_url = ""
+    # Default via infer_platforms so this stays in sync if source defaults change.
+    platforms = infer_platforms({}, "skillhub")
+
+    if github_url and github_session:
+        full_name = github_url.removeprefix("https://github.com/")
+
+        with lock:
+            cached = repo_paths_cache.get(full_name)
+
+        if cached is None:
+            # Two workers can race here for the same monorepo repo; the loser's
+            # fetch results are discarded under the inner lock.  With _ENRICH_WORKERS=4
+            # the collision rate is negligible, so a simple check-then-act is fine.
+            meta = fetch_repo_metadata(github_session, full_name)
+            default_branch = meta.get("default_branch", "main")
+            skill_md_paths = find_skill_md_paths(github_session, full_name)
+            with lock:
+                # Only write if still absent; another worker may have raced us.
+                if full_name not in repo_paths_cache:
+                    repo_paths_cache[full_name] = (meta, default_branch, skill_md_paths)
+                    if not skill_md_paths and filter_cache_path:
+                        add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
+                        filter_cache.add(github_url)
+        else:
+            meta, default_branch, skill_md_paths = cached
+
+        stars = meta.get("stargazers_count", stars)
+        pushed_at = meta.get("pushed_at", pushed_at)
+
+        skill_path = _match_skill_path(basic["name"], skill_md_paths) if skill_md_paths else None
+
+        if skill_path:
+            skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
+            skill_content = _fetch_skill_md(
+                github_session, full_name, path=skill_path, default_branch=default_branch
+            )
+            if skill_content:
+                fm = _parse_frontmatter(skill_content)
+                platforms = infer_platforms(fm, "skillhub")
+
+    # Use detail-page score when available; fall back to listing card score.
+    det_score = detail.get("overall_score", 0.0)
+    overall_score = det_score if det_score > 0.0 else basic.get("listing_score", 0.0)
+
+    return {
+        "name": basic["name"],
+        "description": detail.get("full_description") or basic.get("description", ""),
+        "repo_url": github_url,
+        "rank": detail.get("rank") or basic.get("rank", ""),
+        "overall_score": overall_score,
+        "dimension_scores": detail.get("dimension_scores", {}),
+        "skillhub_url": skillhub_url,
+        "stars": stars,
+        "pushed_at": pushed_at,
+        "skill_md_url": skill_md_url,
+        "platforms": platforms,
+    }
+
+
 def scrape_skill_listing(
     session=None,
     limit: int = None,
@@ -503,119 +611,75 @@ def scrape_skill_listing(
     # Cache repo_full_name → (meta, default_branch, skill_md_paths) to avoid
     # repeated GitHub API calls for the same monorepo.
     repo_paths_cache: dict[str, tuple[dict, str, list[str]]] = {}
+    lock = threading.Lock()
 
     # Discover all categories; "" = uncategorised (catches skills not in any category)
     categories = discover_categories(session)
     crawl_targets = [""] + categories
     log.info("Crawling %d targets: uncategorised + %d categories", len(crawl_targets), len(categories))
 
-    for category in crawl_targets:
-        page = 1
-        while True:
-            list_url = (
-                f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?category={category}&page={page}"
-                if category else
-                f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?page={page}"
-            )
-            if not _can_fetch(rp, list_url):
-                log.warning("robots.txt disallows %s; stopping.", list_url)
-                break
+    with ThreadPoolExecutor(max_workers=_ENRICH_WORKERS) as executor:
+        for category in crawl_targets:
+            page = 1
+            while True:
+                list_url = (
+                    f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?category={category}&page={page}"
+                    if category else
+                    f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?page={page}"
+                )
+                if not _can_fetch(rp, list_url):
+                    log.warning("robots.txt disallows %s; stopping.", list_url)
+                    break
 
-            try:
-                skill_cards, has_more = get_skill_list_page(session, page=page, category=category)
-            except Exception as exc:
-                log.error("Failed to fetch listing page %d (category=%r): %s", page, category, exc)
-                break
-
-            if not skill_cards:
-                break
-
-            for basic in skill_cards:
-                skillhub_url = basic.get("skillhub_url", "")
-
-                # Dedup across categories — same skill may appear in multiple categories
-                if skillhub_url in seen_urls:
-                    continue
-                seen_urls.add(skillhub_url)
-
-                # Resume mode: skip detail fetch for already-crawled skills
-                if skip_skillhub_urls and skillhub_url in skip_skillhub_urls:
-                    log.debug("Skipping already-crawled skillhub URL: %s", skillhub_url)
-                    continue
-
-                detail_url = skillhub_url
-                if not _can_fetch(rp, detail_url):
-                    continue
                 try:
-                    detail = get_skill_detail(session, detail_url) or {}
+                    skill_cards, has_more = get_skill_list_page(session, page=page, category=category)
                 except Exception as exc:
-                    log.warning("Failed detail page %s: %s", detail_url, exc)
-                    detail = {}
+                    log.error("Failed to fetch listing page %d (category=%r): %s", page, category, exc)
+                    break
 
-                github_url = detail.get("github_url", "")
-                stars = 0
-                pushed_at = ""
-                skill_md_url = ""
-                platforms = ["claude_code"]
+                if not skill_cards:
+                    break
 
-                # Check filter cache before making GitHub API calls
-                if github_url and github_url in filter_cache:
-                    log.debug("Skipping %s: in filter cache", github_url)
-                    continue
+                # Dedup / resume filter in main thread; submit enrichment to workers.
+                futures = []
+                for basic in skill_cards:
+                    skillhub_url = basic.get("skillhub_url", "")
+                    if skillhub_url in seen_urls:
+                        continue
+                    seen_urls.add(skillhub_url)
+                    if skip_skillhub_urls and skillhub_url in skip_skillhub_urls:
+                        log.debug("Skipping already-crawled skillhub URL: %s", skillhub_url)
+                        continue
+                    if not _can_fetch(rp, skillhub_url):
+                        continue
+                    futures.append(executor.submit(
+                        _enrich_skill, basic, session, github_session,
+                        filter_cache, filter_cache_path, repo_paths_cache, lock,
+                    ))
 
-                if github_url and github_session:
-                    full_name = github_url.removeprefix("https://github.com/")
+                new_this_page = 0
+                for future in as_completed(futures):
+                    try:
+                        unified = future.result()
+                    except Exception as exc:
+                        log.warning("Enrichment worker error: %s", exc)
+                        continue
+                    if unified:
+                        results.append(unified)
+                        new_this_page += 1
 
-                    if full_name in repo_paths_cache:
-                        meta, default_branch, skill_md_paths = repo_paths_cache[full_name]
-                    else:
-                        meta = fetch_repo_metadata(github_session, full_name)
-                        default_branch = meta.get("default_branch", "main")
-                        skill_md_paths = find_skill_md_paths(github_session, full_name)
-                        repo_paths_cache[full_name] = (meta, default_branch, skill_md_paths)
-                        # Only write to filter cache when we're confident no SKILL.md exists.
-                        # find_skill_md_paths returns [] for both "none found" and transient
-                        # errors; we accept the risk of a false negative here rather than
-                        # permanently blocking a repo on a rate-limit hiccup.
-                        if not skill_md_paths and filter_cache_path:
-                            add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
-                            filter_cache.add(github_url)
-
-                    stars = meta.get("stargazers_count", stars)
-                    pushed_at = meta.get("pushed_at", pushed_at)
-
-                    skill_path = _match_skill_path(basic["name"], skill_md_paths) if skill_md_paths else None
-
-                    if skill_path:
-                        skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
-                        skill_content = _fetch_skill_md(
-                            github_session, full_name, path=skill_path, default_branch=default_branch
-                        )
-                        if skill_content:
-                            fm = _parse_frontmatter(skill_content)
-                            platforms = infer_platforms(fm, "skillhub")
-
-                unified = {
-                    "name": basic["name"],
-                    "description": detail.get("full_description") or basic.get("description", ""),
-                    "repo_url": github_url,
-                    "rank": detail.get("rank") or basic.get("rank", ""),
-                    "overall_score": detail.get("overall_score", 0.0),
-                    "dimension_scores": detail.get("dimension_scores", {}),
-                    "skillhub_url": detail_url,
-                    "stars": stars,
-                    "pushed_at": pushed_at,
-                    "skill_md_url": skill_md_url,
-                    "platforms": platforms,
-                }
-                results.append(unified)
+                if new_this_page or futures:
+                    log.info(
+                        "category=%r page=%d  +%d new  total_collected=%d  seen_urls=%d",
+                        category or "(all)", page, new_this_page, len(results), len(seen_urls),
+                    )
 
                 if limit is not None and len(results) >= limit:
-                    return results
+                    return results[:limit]
 
-            if not has_more:
-                break
-            page += 1
+                if not has_more:
+                    break
+                page += 1
 
     return results
 
@@ -691,6 +755,7 @@ def run(
 
         if len(batch) >= 50:
             written += write_jsonl(batch, output_path, append=(written > 0 or resume))
+            log.info("Written %d records so far to %s", written, output_path)
             batch = []
 
     if batch:

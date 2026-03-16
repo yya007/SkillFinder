@@ -7,6 +7,10 @@ logs/
 data/
 .github/
 
+# skill/data — committed index files ship via the `files` field in package.json,
+# but the transient staging dir should never be packaged
+skill/data/.new/
+
 # Dev config
 .pytest_cache/
 .ruff_cache/

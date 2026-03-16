@@ -15,6 +15,9 @@ env/
 .env
 .env.*
 
+# skill/data staging dir (created transiently by update_index.py)
+skill/data/.new/
+
 # Pipeline intermediates — not needed at runtime
 data/raw/
 data/embeddings.npy

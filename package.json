@@ -3,12 +3,10 @@
   "version": "1.0.0",
   "description": "Universal agent skill discovery — search 14,000+ curated agent skills from all major registries using natural language. Runs entirely locally via FAISS. No API calls, no latency.",
   "files": [
-    "scripts/",
-    "SKILL.md",
-    "plugin.json"
+    "skill/"
   ],
   "scripts": {
-    "postinstall": "node -e \"var m='\\n=== SkillFinder installed ===\\n\\nFinish setup (run once):\\n  1. pip install -r scripts/requirements.txt\\n  2. ollama pull qwen3-embedding:0.6b\\n  3. python scripts/update_index.py\\n\\nThen ask your agent: \\'find a skill for X\\'\\n'; process.stdout.write(m)\""
+    "postinstall": "node -e \"var m='\\n=== SkillFinder installed ===\\n\\nFinish setup (run once):\\n  1. pip install -r skill/scripts/requirements.txt\\n  2. ollama pull qwen3-embedding:0.6b\\n  3. python skill/scripts/update_index.py\\n\\nThen ask your agent: \\'find a skill for X\\'\\n'; process.stdout.write(m)\""
   },
   "keywords": [
     "ai",

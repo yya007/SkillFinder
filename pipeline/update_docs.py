@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).parent.parent
 # Files that contain sentinel blocks
 TARGET_FILES = [
     REPO_ROOT / "README.md",
-    REPO_ROOT / "SKILL.md",
+    REPO_ROOT / "skill" / "SKILL.md",
     REPO_ROOT / "docs" / "data-sources.md",
 ]
 
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--metadata",
-        default=str(REPO_ROOT / "data" / "metadata.jsonl"),
+        default=str(REPO_ROOT / "skill" / "data" / "metadata.jsonl"),
         metavar="PATH",
         help="Path to metadata.jsonl.",
     )

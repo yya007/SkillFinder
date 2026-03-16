@@ -1,0 +1,21 @@
+{
+  "name": "skill-finder",
+  "description": "Search 10,000+ curated agent skills by describing what you want to do. Runs entirely on-device via a local FAISS index — no API calls, no latency.",
+  "version": "0.1.0",
+  "author": {
+    "name": "yya007",
+    "url": "https://github.com/yya007"
+  },
+  "repository": "https://github.com/yya007/SkillFinder",
+  "license": "MIT",
+  "keywords": ["skills", "search", "discovery", "faiss", "vector-search"],
+  "platforms": ["claude_code", "openclaw", "codex"],
+  "install": {
+    "steps": [
+      "pip install -r scripts/requirements.txt",
+      "ollama pull qwen3-embedding:0.6b",
+      "python scripts/update_index.py"
+    ],
+    "note": "Requires Ollama (https://ollama.com/install) to be installed first."
+  }
+}
