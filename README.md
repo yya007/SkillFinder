@@ -39,57 +39,32 @@ Want me to fetch the full SKILL.md for any of these before you install?
 ### Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.com/install) installed locally
+- [Ollama](https://ollama.com/install) with `qwen3-embedding:0.6b` pulled
 
 ### Install
 
-**npm (minimal install — recommended)**
+The pre-built index is included — no build step needed.
 
-Install only the runtime files (no crawlers, tests, or CI tooling):
+**Step 1 — Get the files**
 
-```bash
-npm install -g @yya007/skill-finder
-pip install -r "$(npm root -g)/@yya007/skill-finder/scripts/requirements.txt"
-ollama pull qwen3-embedding:0.6b
-python "$(npm root -g)/@yya007/skill-finder/scripts/update_index.py"
-```
+| Agent | Command |
+|-------|---------|
+| Claude Code | `git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder` |
+| Codex | `git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder` |
+| OpenClaw | `clawhub install skill-finder` |
+| npm (any) | `npm install -g @yya007/skill-finder` then `cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder` |
 
-Then copy the skill to your agent's skills directory:
-
-```bash
-# Claude Code
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
-
-# Codex
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder
-```
-
-**Claude Code (git clone)**
+**Step 2 — Install Python dependencies and pull the embedding model (all platforms)**
 
 ```bash
-git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
-pip install -r ~/.claude/skills/skill-finder/scripts/requirements.txt
+cd ~/.claude/skills/skill-finder   # or your platform's skills dir
+pip install -r scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
 
-The index is included in the repository. When using an agent like Claude, just ask: _"find a skill for X"_
+That's it. Ask your agent: _"find a skill for X"_
 
-The agent will auto-invoke SkillFinder when you ask to find or search for skills.
-
-**OpenClaw**
-
-```bash
-clawhub install skill-finder
-ollama pull qwen3-embedding:0.6b
-```
-
-**Codex**
-
-```bash
-git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
-pip install -r ~/.codex/skills/skill-finder/scripts/requirements.txt
-ollama pull qwen3-embedding:0.6b
-```
+> **Optional:** run `python scripts/update_index.py` to pull the latest weekly index if your clone is more than a week old.
 
 ### Usage — natural language (recommended)
 
@@ -130,9 +105,6 @@ python scripts/search.py "pptx presentation" --no-json --propose 5
 
 # Fetch a specific skill's full SKILL.md before installing
 python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
-
-# Pull the latest weekly index update (optional — index is already included)
-python scripts/update_index.py
 ```
 
 ### Platform filter values
