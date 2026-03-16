@@ -39,7 +39,7 @@ Want me to fetch the full SKILL.md for any of these before you install?
 ### Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.com/install) with `qwen3-embedding:0.6b` pulled
+- [Ollama](https://ollama.com/install) installed locally
 
 ### Install
 
@@ -52,9 +52,15 @@ The pre-built index is included — no build step needed.
 | Claude Code | `git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder` |
 | Codex | `git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder` |
 | OpenClaw | `clawhub install skill-finder` |
-| npm (any) | `npm install -g @yya007/skill-finder` then `cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder` |
+| npm | `npm install -g @yya007/skill-finder` |
 
-**Step 2 — Install Python dependencies and pull the embedding model (all platforms)**
+For npm, also copy to your agent's skills directory after install:
+```bash
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder  # Claude Code
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder   # Codex
+```
+
+**Step 2 — Finish setup (all platforms)**
 
 ```bash
 cd ~/.claude/skills/skill-finder   # or your platform's skills dir
