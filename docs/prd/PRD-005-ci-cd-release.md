@@ -321,6 +321,69 @@ Tags follow the format `index-YYYYMMDD` (e.g., `index-20260310`). This is not Se
 
 ---
 
+## F6 — npm Package Release
+
+SkillFinder is also published to the npm registry as `@yya007/skill-finder`. This provides a lighter-weight install path for end users who only need the runtime files and not the full repository (crawlers, pipeline, tests, docs).
+
+### What gets published
+
+The `files` field in `package.json` limits the published package to:
+
+```
+scripts/        ← search.py, fetch_skill.py, update_index.py, requirements.txt
+SKILL.md        ← agent skill definition
+plugin.json     ← OpenClaw plugin manifest
+```
+
+Data files (`data/index.faiss`, `data/metadata.jsonl`) are **excluded** from the npm package — users download the latest index via `python scripts/update_index.py` after install. This avoids bloating the package (FAISS index can exceed npm's 100 MB unpack limit as the index grows).
+
+### Release workflow
+
+```bash
+# Preview what would be published (no changes)
+./scripts/npm-release.sh
+
+# Patch release (e.g. 1.0.0 → 1.0.1)
+./scripts/npm-release.sh patch
+
+# Minor or major
+./scripts/npm-release.sh minor
+./scripts/npm-release.sh major
+```
+
+`scripts/npm-release.sh` handles: login check → dry-run preview → version bump → `npm publish --access public` → optional git tag + push.
+
+### npm / GitHub release versioning alignment
+
+| Artifact | Tag format | Versioned by |
+|----------|-----------|-------------|
+| GitHub Release (index) | `index-YYYYMMDD` | Data date |
+| npm package | `1.x.y` (SemVer) | Code/skill changes |
+
+The two versioning schemes are independent. A data release does not trigger an npm bump; a npm bump does not require a new index build.
+
+### Pre-publish checklist
+
+1. `npm whoami` confirms you are logged in as `yya007`.
+2. `npm publish --dry-run` shows only `scripts/`, `SKILL.md`, `plugin.json`.
+3. `plugin.json` `version` and `package.json` `version` are in sync.
+4. All unit tests pass (`pytest`).
+
+---
+
+## Known Breaking Changes
+
+### Monorepo skill ID scheme (v1.0)
+Skills in monorepos (e.g. `anthropics/skills`) previously keyed their `id` on
+`sha256(repo_url)`. They now key on `sha256(skill_md_url)`, giving each skill in a
+monorepo a distinct stable ID. IDs for all multi-skill repos changed in this release.
+
+**Impact:** Any downstream system that stored SkillFinder IDs and expected them to be
+stable across index rebuilds will see these IDs as new/unknown records. There is no
+automatic migration — a fresh index download is required.
+
+---
+
 ## Resolved Questions
 
 **RAM for FAISS index build** — Resolved. Peak memory for 20K skills × 1024 dims is ~2 GB (embeddings array) + ~200 MB (FAISS index in RAM) = ~2.2 GB total. `ubuntu-latest` provides 14 GB; no issue. If the index grows beyond 200K skills the `IndexIVFFlat` path (already implemented in `build_index.py`) keeps memory bounded, and a larger runner can be selected via `runs-on`.
