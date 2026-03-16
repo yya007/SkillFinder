@@ -238,6 +238,7 @@ class TestLoadExistingRecords:
         assert "https://github.com/user/b" in result
         assert len(result) == 2
 
+
     def test_skips_malformed_lines(self, tmp_path):
         p = tmp_path / "bad.jsonl"
         p.write_text('{"repo_url": "https://github.com/user/good"}\nnot-json\n')
@@ -260,6 +261,7 @@ class TestLoadExistingRecords:
         rec = result["https://github.com/user/repo"]
         assert rec["name"] == "my-skill"
         assert rec["raw_metadata"]["stars"] == 42
+
 
 
 # ---------------------------------------------------------------------------
