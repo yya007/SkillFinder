@@ -1,26 +1,28 @@
 # PRD-001: Data Crawler Pipeline
 
-**Status:** Planned
-**Phase:** 1 of 5
+**Status:** Implemented (active development)
+**Phase:** 1 of 7
 **Depends on:** Nothing
 **Blocks:** PRD-002
+**See also:** PRD-007 (incremental crawl & periodic update)
 
 ---
 
 ## Problem
 
-SkillFinder needs a corpus of agent skills to index. Skills are scattered across four distinct sources with different access methods, formats, and quality signals. We need a reliable, automated pipeline to collect them all and output a unified, deduplicated dataset.
+SkillFinder needs a corpus of agent skills to index. Skills are scattered across many sources with different access methods, formats, and quality signals. We need a reliable, automated pipeline to collect them all and output a unified, deduplicated dataset.
 
 ## Goals
 
-- Crawl all four source registries and output raw JSONL per source
+- Crawl all source registries and output raw JSONL per source
 - Normalize and deduplicate into a single `unified_skills.jsonl`
-- Apply quality filtering to produce a 10K–20K skill corpus
-- Run unattended in GitHub Actions; complete in under 60 minutes
+- Apply quality filtering (configurable `--min-stars`, default 10)
+- Run unattended in GitHub Actions
+- Support incremental updates to avoid full re-crawls (see PRD-007)
 
 ## Non-Goals
 
-- Real-time / incremental crawling (weekly full rebuild is sufficient)
+- Real-time / webhook-driven crawling (PRD-007 covers periodic incremental)
 - Building the embedding index (PRD-002)
 - Distributing the crawler to end users (CI-only code)
 
@@ -53,13 +55,23 @@ SkillFinder needs a corpus of agent skills to index. Skills are scattered across
 - Respect `robots.txt`; add 1–2s inter-request delay
 - Output: `data/raw/skillhub.jsonl`
 
-### F4 — Marketplace Crawler
+### F4 — Topic Crawler
+
+- Search GitHub repos tagged with skill-related topics
+- Topics covered: `claude-skill`, `claude-code-skill`, `claude-skills`, `claude-code-skills`, `openclaw-skill`, `openclaw-skills`, `codex-skill`, `codex-skills`, `agent-skill`, `agent-skills`
+- Source tag: `"topic"` — requires ≥10 stars to pass quality filter
+- Output: `data/raw/topic.jsonl`
+
+### F5 — Marketplace Crawler
 
 - Target repos: `anthropics/skills`, `daymade/claude-code-skills`, `mhattingpete/claude-skills-marketplace`, `alirezarezvani/claude-skills`, plus any repo with `marketplace.json` at root discovered via GitHub Search
 - Parse `marketplace.json` arrays; read `SKILL.md` at each listed path
+- Fetches `stargazers_count` and `pushed_at` per repo and stores in `raw_metadata`
 - Output: `data/raw/marketplace.jsonl`
 
-### F5 — Normalizer
+**Pending (PRD-007 backlog):** Add high-priority official org repos — `openai/skills`, `google-gemini/gemini-skills`, `vercel-labs/agent-skills`, `awslabs/agent-plugins`, `github/awesome-copilot`.
+
+### F6 — Normalizer
 
 Input: all `data/raw/*.jsonl` files
 Output: `data/unified_skills.jsonl`
@@ -67,11 +79,15 @@ Output: `data/unified_skills.jsonl`
 Steps:
 1. Load all records, tag each with `source` field
 2. Compute canonical key: `lower(repo_url).rstrip('/').removesuffix('.git')`
-3. Group by canonical key; merge metadata using priority rules in [`data-sources.md`](../data-sources.md)
-4. Build `embedding_text` from merged record
-5. Apply quality filter (drop records with no description and zero stars and no curated registry presence)
-6. Assign `id = sha256(canonical_key)`
+3. For monorepo skills (multiple SKILL.md per repo): use `sha256(skill_md_url)` as ID; fall back to `sha256(canonical_repo_url)` when `skill_md_url` absent
+4. Group by canonical key; merge metadata using priority rules in [`data-sources.md`](../data-sources.md)
+5. Build `embedding_text` from merged record
+6. Apply quality filter: `stars >= min_stars` (configurable via `--min-stars`, default 10) AND non-empty description
 7. Write output with one JSON object per line
+
+### F7 — Metadata Backfill
+
+`pipeline/backfill_metadata.py` — patches `stars` and `pushed_at` into existing raw JSONL without re-crawling content. Uses `repo_url` to deduplicate GitHub API calls (one call per unique repo, not per record). Atomic file write. See PRD-007 for the full incremental update design.
 
 ---
 
@@ -127,33 +143,43 @@ lxml>=5.0             # faster HTML parser for bs4
 
 ## Success Criteria
 
-| Metric | Target |
-|--------|--------|
-| SkillsMP records collected | ≥ 50,000 raw |
-| ClawHub records collected | ≥ 5,000 raw |
-| SkillHub records collected | ≥ 5,000 raw |
-| Total unique skills after dedup | ≥ 10,000 |
-| Skills passing quality filter | ≥ 8,000 |
-| Pipeline runtime | ≤ 60 min in CI |
-| Skills with no description | 0 in `unified_skills.jsonl` |
-| Crawler crash rate | < 1% of source records |
+| Metric | Current | Target |
+|--------|---------|--------|
+| SkillsMP records collected | 1,583 raw | ≥ 50,000 raw |
+| ClawHub records collected | 2,009 raw | ≥ 5,000 raw |
+| SkillHub records collected | 141 raw (fix in progress) | ≥ 5,000 raw |
+| Marketplace records collected | 13,020 raw | ≥ 20,000 raw |
+| Total unique skills after dedup + filter | 14,306 | ≥ 20,000 |
+| Skills with no description | 0 | 0 |
+| Crawler crash rate | < 1% | < 1% |
+| stars field populated in all raw records | Yes (after backfill) | Yes |
 
 ---
 
 ## Implementation Order
 
-1. `pipeline/normalize.py` first — it defines the output contract; write tests against it with fixture data
-2. `crawlers/marketplace_crawler.py` — simplest (known repos, structured data)
-3. `crawlers/skillsmp_crawler.py` — most data, needs rate limit handling
-4. `crawlers/clawhub_crawler.py` — parse README format
-5. `crawlers/skillhub_crawler.py` — web scraping, most fragile
+1. ✅ `pipeline/normalize.py` — defines output contract
+2. ✅ `crawlers/marketplace_crawler.py` — known repos, structured data
+3. ✅ `crawlers/skillsmp_crawler.py` — GitHub code search with size+star sharding
+4. ✅ `crawlers/clawhub_crawler.py` — awesome list + org/topic discovery
+5. ✅ `crawlers/skillhub_crawler.py` — web scraping with category pagination
+6. ✅ `crawlers/topic_crawler.py` — GitHub topic tag search
+7. ✅ `pipeline/backfill_metadata.py` — stars/pushed_at patch without re-crawl
+8. ✅ `pipeline/update_docs.py` — auto-refresh stats in README/SKILL.md
+9. 🔲 PRD-007: incremental crawl state, `--mode` flags, new registries
 
 ---
 
 ## Resolved Questions
 
-**GitHub Code Search 1,000-result cap** — Resolved. The SkillsMP crawler shards by `SKILL.md` file size (`size:<=500`, `size:501..2000`, `size:2001..10000`, `size:>10000`). Each shard is a disjoint byte range, so combining all four covers the full result set without hitting the cap. Cross-shard deduplication is applied before returning results.
+**GitHub Code Search 1,000-result cap** — Resolved. The SkillsMP crawler shards by `SKILL.md` file size (`size:<=500`, `size:501..2000`, `size:2001..10000`, `size:>10000`) crossed with star buckets (`stars:0`, `stars:1..10`, `stars:11..100`, `stars:>100`). Each cell is a disjoint range. Cross-shard deduplication is applied before writing output.
 
-**SkillHub bot detection** — Resolved. The crawler respects `robots.txt` (via `urllib.robotparser`) and sets a descriptive `User-Agent`. No Playwright required at current crawl volume. If SkillHub adds JavaScript-rendered pages or CAPTCHAs in future, add a Playwright fallback behind a `--playwright` flag.
+**SkillHub category pagination** — Resolved. The site uses `?category=<slug>&page=N` pagination. The crawler calls `discover_categories()` at startup to extract all category slugs from the index page, then crawls each category separately. Deduplication across categories is handled via `seen_urls` set.
 
-**ClawHub REST API authentication** — Resolved. ClawHub is indexed via the GitHub API (searching the `openclaw/clawhub` repository), not a separate ClawHub REST API. Standard `GITHUB_TOKEN` is sufficient; no additional credentials needed.
+**Marketplace stars missing** — Resolved. `marketplace_crawler.py` now passes `stargazers_count` and `pushed_at` from `fetch_repo_metadata()` into `raw_metadata`. Existing records can be backfilled with `pipeline/backfill_metadata.py`.
+
+**Quality filter flexibility** — Resolved. `pipeline/normalize.py` accepts `--min-stars N` (default 10). Curated-source bypass removed; star count is the single quality signal alongside non-empty description.
+
+**SkillHub bot detection** — Resolved. The crawler respects `robots.txt` (via `urllib.robotparser`) and sets a descriptive `User-Agent`. No Playwright required at current crawl volume.
+
+**ClawHub REST API authentication** — Resolved. ClawHub is indexed via the GitHub API (searching the `openclaw/clawhub` repository), not a separate ClawHub REST API. Standard `GITHUB_TOKEN` is sufficient.
