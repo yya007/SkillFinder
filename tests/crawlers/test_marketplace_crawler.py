@@ -158,6 +158,8 @@ class TestBuildRawRecord:
 class TestRunMarketplace:
     """Unit tests for marketplace_crawler.run() with HTTP mocked out."""
 
+    _MOCK_REPO_META = {"default_branch": "main", "stargazers_count": 0, "pushed_at": "2026-01-01"}
+
     def _make_marketplace_entries(self, n=3, parent_repo="anthropics/skills", official=True):
         return [
             {
@@ -171,11 +173,19 @@ class TestRunMarketplace:
             for i in range(n)
         ]
 
+    def _patch_run(self, entries, n_repos=1):
+        """Return context managers to fully mock run() without network calls."""
+        return (
+            patch("crawlers.marketplace_crawler.fetch_repo_metadata", return_value=self._MOCK_REPO_META),
+            patch("crawlers.marketplace_crawler.list_skill_dirs", return_value=entries),
+        )
+
     def test_respects_limit(self, tmp_path):
         from crawlers.marketplace_crawler import run
 
-        with patch("crawlers.marketplace_crawler.list_skill_dirs") as mock_list:
-            mock_list.return_value = self._make_marketplace_entries(n=10)
+        entries = self._make_marketplace_entries(n=10)
+        with patch("crawlers.marketplace_crawler.fetch_repo_metadata", return_value=self._MOCK_REPO_META), \
+             patch("crawlers.marketplace_crawler.list_skill_dirs", return_value=entries):
             out = str(tmp_path / "out.jsonl")
             count = run(out, limit=5)
 
@@ -184,8 +194,9 @@ class TestRunMarketplace:
     def test_output_has_required_fields(self, tmp_path):
         from crawlers.marketplace_crawler import run
 
-        with patch("crawlers.marketplace_crawler.list_skill_dirs") as mock_list:
-            mock_list.return_value = self._make_marketplace_entries(n=1)
+        entries = self._make_marketplace_entries(n=1)
+        with patch("crawlers.marketplace_crawler.fetch_repo_metadata", return_value=self._MOCK_REPO_META), \
+             patch("crawlers.marketplace_crawler.list_skill_dirs", return_value=entries):
             out = str(tmp_path / "out.jsonl")
             run(out)
 
@@ -196,8 +207,9 @@ class TestRunMarketplace:
     def test_source_is_marketplace_for_all_records(self, tmp_path):
         from crawlers.marketplace_crawler import run
 
-        with patch("crawlers.marketplace_crawler.list_skill_dirs") as mock_list:
-            mock_list.return_value = self._make_marketplace_entries(n=3)
+        entries = self._make_marketplace_entries(n=3)
+        with patch("crawlers.marketplace_crawler.fetch_repo_metadata", return_value=self._MOCK_REPO_META), \
+             patch("crawlers.marketplace_crawler.list_skill_dirs", return_value=entries):
             out = str(tmp_path / "out.jsonl")
             run(out)
 

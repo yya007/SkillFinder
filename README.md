@@ -15,7 +15,7 @@ Describe what you need → SkillFinder searches a pre-built local vector index �
 ```
 You: find a skill for deploying kubernetes clusters
 
-Claude: Found 3 skills for "deploying kubernetes clusters":
+Agent: Found 3 skills for "deploying kubernetes clusters":
 
 1. **k8s-deployer** ⭐ 142 stars — `skillsmp`
    Deploy and manage Kubernetes clusters with automated rollbacks and blue-green deployments.
@@ -51,9 +51,9 @@ pip install -r ~/.claude/skills/skill-finder/scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
 
-The index is included in the repository. Just ask Claude: _"find a skill for X"_
+The index is included in the repository. When using an agent like Claude, just ask: _"find a skill for X"_
 
-Claude Code will auto-invoke SkillFinder when you ask to find or search for skills.
+The agent will auto-invoke SkillFinder when you ask to find or search for skills.
 
 **OpenClaw**
 
@@ -72,7 +72,7 @@ ollama pull qwen3-embedding:0.6b
 
 ### Usage — natural language (recommended)
 
-Just ask Claude:
+When using an agent (Claude Code, Codex, OpenClaw, etc.), just describe what you need:
 
 - "find a skill for deploying kubernetes clusters"
 - "is there a skill that writes and runs SQL migrations"
@@ -89,7 +89,7 @@ Just ask Claude:
 ```bash
 cd ~/.claude/skills/skill-finder
 
-# Search (returns up to 30 candidates, Claude proposes the best ≤5)
+# Search (returns up to 30 candidates, the agent proposes the best ≤5)
 python scripts/search.py "deploy kubernetes clusters" --propose 10
 
 # Filter to Claude Code skills only
@@ -126,7 +126,7 @@ python scripts/update_index.py
 
 ## Why not just Google it?
 
-The [Agent Skills](https://agentskills.io) open standard (originally developed by Anthropic) is now supported by Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and more. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
+The [Agent Skills](https://agentskills.io) open standard is supported by Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and other tools. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
 
 **Searching the web manually:**
 
@@ -162,7 +162,24 @@ $ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
    [claude_code] /plugin install terraform-k8s
 ```
 
-Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included. SkillFinder indexes official Anthropic skills alongside SkillsMP, ClawHub, and SkillHub automatically.
+Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included.
+
+---
+
+## What gets indexed (and what gets filtered out)
+
+SkillFinder indexes skills from four registries: **SkillsMP** (GitHub code search), **ClawHub/OpenClaw** (awesome list + org/topic search), **SkillHub** (web scrape), and the **Anthropic official marketplace**. A fifth crawler discovers repos via GitHub topic tags (`claude-skill`, `codex-skill`, `agent-skill`, etc.).
+
+Skills are **kept** if they meet any of the following:
+- ≥ 10 GitHub stars
+- Listed in a curated registry (ClawHub, SkillHub, official marketplace)
+- SkillHub rank S or A
+
+Skills are **dropped** if:
+- No description (after checking SKILL.md frontmatter and README)
+- Zero stars and not in any curated registry and no SkillHub rating
+
+Safety: ClawHub records carry a `safety_scan` result from VirusTotal. SkillsMP and SkillHub records do not. Always review a skill's repository before installing it.
 
 ---
 
@@ -192,8 +209,11 @@ Each crawler writes a raw JSONL file to `data/raw/`. Run them independently; the
 # SkillsMP (GitHub code search for SKILL.md files)
 python -m crawlers.skillsmp_crawler -o data/raw/skillsmp.jsonl
 
-# ClawHub / OpenClaw
+# ClawHub / OpenClaw (awesome list + org/topic discovery, requires GITHUB_TOKEN)
 python -m crawlers.clawhub_crawler -o data/raw/clawhub.jsonl
+
+# GitHub topic search (claude-skill, codex-skill, agent-skill, etc.)
+python -m crawlers.topic_crawler -o data/raw/topic.jsonl --data-dir data/raw
 
 # SkillHub
 python -m crawlers.skillhub_crawler -o data/raw/skillhub.jsonl
@@ -249,14 +269,15 @@ pytest tests/quality/ -v -m quality
 
 ## Coverage
 
-| Registry | Skills indexed |
-|----------|---------------|
-| SkillsMP (GitHub code search) | top 10K by quality |
-| ClawHub / OpenClaw | 5,400+ |
-| SkillHub | 7,000+ |
-| Anthropic official marketplace | ~50 |
+| Registry | Crawler | Skills crawled |
+|----------|---------|---------------|
+| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | ~500 (quality-filtered) |
+| ClawHub / OpenClaw | `clawhub_crawler.py` | ~3,500 |
+| SkillHub | `skillhub_crawler.py` | ~500 |
+| Anthropic official marketplace | `marketplace_crawler.py` | ~50 |
+| GitHub topics | `topic_crawler.py` | varies |
 
-After deduplication and quality filtering: **10,000–20,000 unique skills** in the default index.
+After deduplication and quality filtering: **~4,500 unique skills** in the default index (updated weekly).
 
 ---
 
@@ -264,9 +285,9 @@ After deduplication and quality filtering: **10,000–20,000 unique skills** in 
 
 1. **Weekly CI pipeline** (GitHub Actions): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → commits the updated index to the repo and publishes a GitHub Release artifact for users who want to pull updates manually via `update_index.py`.
 
-2. **Runtime** (your machine): query is embedded locally via Ollama → FAISS nearest-neighbor search (< 200 ms on CPU) → candidate pool returned to Claude → Claude reranks and presents the best matches.
+2. **Runtime** (your machine): query is embedded locally via Ollama → FAISS nearest-neighbor search (< 200 ms on CPU) → candidate pool returned to the agent → agent reranks and presents the best matches.
 
-3. **Deep dive**: Claude can fetch the raw `SKILL.md` from any result's repo before you install it.
+3. **Deep dive**: the agent can fetch the raw `SKILL.md` from any result's repo before you install it.
 
 The same embedding model (`qwen3-embedding:0.6b`) is used in CI and at runtime — the index is always compatible.
 
