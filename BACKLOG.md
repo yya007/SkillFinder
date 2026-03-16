@@ -7,43 +7,58 @@ Items are grouped by theme; severity noted where applicable.
 
 ## Security & Correctness
 
-### Update safety check
-**Priority: high**
-The `safety_scan` flag in the index is a pass/fail boolean sourced from ClawHub's
-automated scanner. It has two gaps:
+### Implement real safety scanner for ClawHub records
+**Priority: medium**
+`safety_scan_date` is plumbed through the pipeline but `safety_scan` is only ever set
+to `True` for `VoltAgent/awesome-openclaw-skills` records (curated list trust). There is
+no actual scan logic that checks SKILL.md content for dangerous patterns. A real
+implementation should inspect trigger blocks for `shell: true`, suspicious `curl | sh`
+patterns, and escalating permission requests.
 
-1. **Staleness** — a skill scanned months ago is still flagged `safety_scan: true`
-   even if the repo has since changed. Add a `safety_scan_date` field to metadata
-   and surface it in search output so users can judge freshness.
-2. **Coverage** — only ClawHub-originated records carry a scan result; SkillsMP
-   and SkillHub records always have `safety_scan: null`. Consider running a
-   lightweight heuristic scan (check for suspicious patterns in SKILL.md triggers,
-   no `shell: true` escalations, etc.) at normalize time so the flag has broader
-   coverage.
+**Files:** `crawlers/clawhub_crawler.py` (post-fetch scan), `pipeline/normalize.py` (optional normalize-time scan).
 
-**Files:** `pipeline/normalize.py`, `scripts/search.py` (format output),
-`SKILL.md` (Step 5 — surface scan date to agent).
+---
+
+### Heuristic safety scan for SkillsMP/SkillHub records
+**Priority: low**
+Only ClawHub-originated records carry a `safety_scan` result; SkillsMP and SkillHub
+records always have `safety_scan: null`. Consider running a lightweight heuristic scan
+(check for suspicious patterns in SKILL.md triggers, no `shell: true` escalations, etc.)
+at normalize time so the flag has broader coverage.
+
+**Files:** `pipeline/normalize.py`, `SKILL.md` (Step 5 — surface scan date to agent).
 
 ---
 
 ## Features
 
-### Remote search fallback
-**Priority: medium**
-When the local index is missing or Ollama is unavailable, fall back to a
-lightweight remote search API rather than failing hard. Options:
+### crawl-sources SKILL.md GITHUB_TOKEN check blocks SkillHub
+**Priority: low**
+`skills/crawl-sources/SKILL.md` checks for a GITHUB_TOKEN before running any crawler,
+but SkillHub (`skillhub_crawler.py`) uses HTTP scraping only and does not need a GitHub
+token. The check incorrectly blocks SkillHub crawls when no token is present.
 
-- Hosted SkillFinder API (future): POST query → ranked results, no local model needed.
-- GitHub code search fallback: query `filename:SKILL.md <terms>` via GitHub API,
-  return top results with basic metadata. No embedding quality, but better than nothing.
+**File:** `skills/crawl-sources/SKILL.md`.
 
-Scope:
-- Add `--remote` flag to `scripts/search.py` to opt in explicitly.
-- In `SKILL.md` agent instructions, add a Step 0 check: if index or Ollama is
-  unavailable after `ensure_ollama()` fails, offer the user a remote fallback.
-- Remote results should be clearly labeled `(remote — unranked, no quality signals)`.
+---
 
-**Files:** `scripts/search.py`, `SKILL.md` (Step 0 / error path).
+### Root SKILL.md / skills/update-index/SKILL.md duplication
+**Priority: low**
+The root `SKILL.md` Workflow B (full update) and `skills/update-index/SKILL.md` define
+similar step sequences independently. Changes to one are not reflected in the other,
+creating maintenance split-brain risk.
+
+**Files:** `SKILL.md`, `skills/update-index/SKILL.md`.
+
+---
+
+### package.json postinstall uses brittle node -e string
+**Priority: low**
+The `postinstall` script in `package.json` uses a multi-line `node -e '...'` string with
+manual escaping for newlines and quotes. This is fragile and breaks with certain npm
+versions or shells. Extract the logic into a dedicated `scripts/postinstall.js` file.
+
+**File:** `package.json`.
 
 ---
 
@@ -73,17 +88,6 @@ Add a cleanup step with `if: always()`.
 
 ---
 
-### Add fallback for incremental update past IVF_THRESHOLD
-**Priority: medium** *(review issue 9)*
-At 50k+ vectors, incremental updates are blocked and a full rebuild is required.
-There is no option to rebuild just the FAISS index from cached `embeddings.npy`
-(avoiding the 60-min re-embed). Document as a known limitation; consider a
-`--rebuild-index-only` mode.
-
-**File:** `pipeline/incremental_update.py`.
-
----
-
 ### Deep crawler state file not atomic on Windows
 **Priority: low**
 `crawlers/skillsmp_deep_crawler.py` saves state via `tmp → os.replace()`. On
@@ -93,17 +97,6 @@ open. Low risk for current Linux CI usage, but worth noting.
 ---
 
 ## Developer Experience
-
-### Document monorepo ID change as a breaking change
-**Priority: medium** *(review issue 8)*
-Skills in monorepos (e.g. `anthropics/skills`) now key their SHA256 `id` on
-`skill_md_url` rather than `repo_url`. This silently changes IDs of existing
-records. Add a migration note to PRD-005 or a CHANGELOG entry; consider a grace
-period or explicit versioning for the ID scheme.
-
-**File:** `pipeline/normalize.py:379`, `docs/prd/PRD-005-ci-cd-release.md`.
-
----
 
 ### Report line numbers on JSON parse errors in incremental_update.py
 **Priority: low** *(review issue 11)*
@@ -133,69 +126,6 @@ incremental vs. full rebuild and when to use each.
 
 ---
 
-## Crawler Expansion (from PRD-007 backlog research)
-
-### High-priority new registries — official org repos
-**Priority: high**
-Add to `marketplace_crawler.py` as known target repos:
-- `openai/skills` — Official Codex skills catalog
-- `google-gemini/gemini-skills` — Official Gemini CLI skills
-- `vercel-labs/agent-skills` — Vercel official skills
-- `awslabs/agent-plugins` — AWS official; released Feb 2026
-- `github/awesome-copilot` — 25k stars; has `skills/` + `marketplace.json`
-
-**File:** `crawlers/marketplace_crawler.py` (TARGET_REPOS list).
-
----
-
-### High-priority awesome lists to parse
-**Priority: high**
-Add new ClawHub-style crawling for:
-- `ComposioHQ/awesome-claude-skills` (44k stars)
-- `hesreallyhim/awesome-claude-code` (28k stars; also `THE_RESOURCES_TABLE.csv`)
-- `VoltAgent/awesome-agent-skills` (11k stars)
-- `skillmatic-ai/awesome-agent-skills`
-- `heilcheng/awesome-agent-skills`
-- `sickn33/antigravity-awesome-skills`
-
-**File:** `crawlers/clawhub_crawler.py` (AWESOME_LISTS constant).
-
----
-
-### New GitHub topic tags for topic_crawler
-**Priority: high**
-Extend TOPIC_QUERIES with: `claude-code-plugins`, `gemini-skills`,
-`gemini-cli-skills`, `opencode-skills`, `antigravity-skills`, `cursor-skills`,
-`skill-md`, `agent-plugins`, `kiro-skill`, `roo-code-skill`.
-
-**File:** `crawlers/topic_crawler.py` (TOPIC_QUERIES list).
-
----
-
-### New filename patterns for skillsmp_crawler
-**Priority: high**
-- `filename:AGENTS.md` — OpenAI Codex alternative (needs heuristic to filter non-skill repos)
-- `filename:marketplace.json` — discovers marketplace-format repos
-- `path:.agents/skills filename:SKILL.md` — Gemini CLI / Codex convention
-
-**File:** `crawlers/skillsmp_crawler.py`.
-
----
-
-### Web registries: skills.sh, agentskill.sh
-**Priority: medium**
-- `skills.sh` (88k skills) — check `skills.sh/llms.txt` for structured index
-- `agentskill.sh` (110k skills) — check `agentskill-sh/agentskill-mcp` for API
-- `agentskills.io/llms.txt` — standard body's own index
-- `claude-plugins.dev` — auto-indexes GitHub SKILL.md files
-
-Research needed: do these expose a public JSON index or require scraping?
-(PRD-007 open question #2)
-
-**File:** new `crawlers/skills_sh_crawler.py` (or similar).
-
----
-
 ## Code Quality
 
 ### Remove dead CURATED_SOURCES constant from normalize.py
@@ -204,18 +134,5 @@ After removing curated-source bypass from `passes_quality_filter()`,
 `CURATED_SOURCES` (line 28) is defined but never referenced. Remove it.
 
 **File:** `pipeline/normalize.py:28`.
-
----
-
-## Testing
-
-### Crawler integration tests require live GitHub API
-**Priority: medium**
-Tests in `tests/test_integration.py` that touch crawlers hit the real GitHub
-API, are `@pytest.mark.network`, and are excluded by default. Consider a
-record/replay fixture (using `responses` or `pytest-recording`) so crawler
-logic can be tested in CI without network access.
-
-**File:** `tests/test_integration.py`, `requirements-dev.txt`.
 
 ---

@@ -39,7 +39,6 @@ Additionally, the current pipeline has no mechanism to:
 
 - Real-time / webhook-driven updates (GitHub webhooks require app registration)
 - Streaming index updates (batch rebuild after crawl remains the norm)
-- Removing deleted skills from the index (tombstone / stale detection is PRD-008)
 - Crawling new registries discovered in the March 2026 web research (tracked separately in BACKLOG.md)
 
 ---
@@ -135,7 +134,7 @@ For repos whose `pushed_at` is newer than `last_incremental`:
 3. Compare against `state.repos[repo].skill_md_paths`:
    - **New paths:** fetch content, add new records to raw JSONL
    - **Existing paths:** fetch content only if the tree blob SHA differs from state
-   - **Removed paths:** mark records as stale (do not delete yet — PRD-008)
+   - **Removed paths:** write a tombstone record to raw JSONL (see §Tombstone Schema below)
 4. Update `skill_md_paths` and blob SHAs in state
 
 For skill content, store the blob SHA per path:
@@ -243,7 +242,29 @@ def diff_awesome_list(old_entries: list[str], new_entries: list[str]) -> tuple[l
     return list(new_set - old_set), list(old_set - new_set)
 ```
 
-Only crawl `new_urls`. Log `removed_urls` for future stale detection (PRD-008).
+Only crawl `new_urls`. For each URL in `removed_urls`, write a tombstone record (see §Tombstone Schema below).
+
+### Tombstone Schema
+
+When a SKILL.md path is removed from a repo tree or a URL disappears from an awesome list, the crawler writes a tombstone record to the raw JSONL instead of silently dropping it:
+
+```json
+{
+  "repo_url": "https://github.com/user/old-skill",
+  "skill_md_url": "https://github.com/user/old-skill/blob/main/SKILL.md",
+  "source": "clawhub",
+  "tombstone": true,
+  "deleted_at": "2026-03-15"
+}
+```
+
+**Normalize behaviour:** `pipeline/normalize.py` skips any record with `tombstone: true` when building the unified output — tombstoned skills do not appear in the FAISS index. If a skill ID was previously indexed, it will be absent from the next rebuild.
+
+**Search behaviour:** no change needed in `scripts/search.py` — tombstoned records never enter the index.
+
+**State file:** the crawler also sets `state.repos[repo].tombstoned_at` so incremental runs don't re-crawl tombstoned repos unless the repo reappears with a new `pushed_at` date.
+
+**Resurrection:** if a tombstoned repo later publishes a new SKILL.md (detected via `pushed:>DATE` in discover mode), the new record overwrites the tombstone in the raw JSONL and the skill re-enters the index on the next rebuild.
 
 ---
 
@@ -262,51 +283,10 @@ Only crawl `new_urls`. Log `removed_urls` for future stale detection (PRD-008).
 
 ## New Registries Backlog (March 2026 Research)
 
-Web research identified the following sources not yet crawled. Prioritized for future implementation:
+### Filename Patterns (`skillsmp_crawler.py`)
+- `filename:AGENTS.md` — OpenAI Codex alternative to SKILL.md; needs heuristic filter (use `name`+`description` frontmatter check, same as SKILL.md)
 
-### High Priority — Official Org Repos (extend `marketplace_crawler.py`)
-- `openai/skills` — Official Codex skills catalog
-- `google-gemini/gemini-skills` — Official Gemini CLI skills
-- `vercel-labs/agent-skills` — Vercel official skills
-- `awslabs/agent-plugins` — AWS official; released Feb 2026
-- `github/awesome-copilot` — 25k stars; has `skills/` + `marketplace.json`
-
-### High Priority — Awesome Lists to Parse
-- `ComposioHQ/awesome-claude-skills` (44k stars)
-- `hesreallyhim/awesome-claude-code` (28k stars; also has `THE_RESOURCES_TABLE.csv`)
-- `VoltAgent/awesome-agent-skills` (11k stars; 500+ cross-platform)
-- `skillmatic-ai/awesome-agent-skills` — references Microsoft, Supabase, HuggingFace orgs
-- `heilcheng/awesome-agent-skills` — Claude, Codex, Antigravity, Copilot, VS Code
-- `sickn33/antigravity-awesome-skills` — 1,000+ Antigravity/Claude Code/Cursor
-
-### High Priority — New GitHub Topic Tags (extend `topic_crawler.py`)
-
-Add to `TOPIC_QUERIES`:
-```python
-"topic:claude-code-plugins",
-"topic:gemini-skills",
-"topic:gemini-cli-skills",
-"topic:opencode-skills",
-"topic:antigravity-skills",
-"topic:cursor-skills",
-"topic:skill-md",
-"topic:agent-plugins",
-"topic:kiro-skill",
-"topic:roo-code-skill",
-```
-
-### High Priority — New Filename Patterns (extend `skillsmp_crawler.py`)
-- `filename:AGENTS.md` — OpenAI Codex alternative to SKILL.md
-- `filename:marketplace.json` — discovers more marketplace-format repos
-- `path:.agents/skills filename:SKILL.md` — Gemini CLI / Codex directory convention
-
-### Medium Priority — Web Registries
-- `skills.sh` (88k skills) — check `skills.sh/llms.txt` for structured index
-- `agentskill.sh` (110k skills) — check `agentskill-sh/agentskill-mcp` for API
-- `agentskills.io/llms.txt` — the standard body's own index
-- `claude-plugins.dev` — auto-indexes GitHub SKILL.md files
-
-### Low Priority
+### Low Priority — Future
 - npm packages tagged `agent-skill` / `skill-md`
 - PyPI `agent-skills` / `agent-skill` packages
 - MCP registries (Smithery, Glama) — different schema, future expansion
@@ -337,11 +317,3 @@ Add to `TOPIC_QUERIES`:
 
 ---
 
-## Open Questions
-
-| # | Question | Owner |
-|---|----------|-------|
-| 1 | Should `data/crawl_state/` be committed or CI-cached? Committing gives history but pollutes git log. | TBD |
-| 2 | `skills.sh` and `agentskill.sh` claim 88k–110k skills each. Do they expose a public JSON index or require scraping? | Research needed |
-| 3 | `filename:AGENTS.md` may return non-skill repos (generic agent docs). Need a heuristic to filter: check frontmatter for `name`+`description`, or check if `SKILL.md` also exists in the same repo. | TBD |
-| 4 | Stale detection (repo deleted, SKILL.md removed) — should the index tombstone these or silently drop on next full rebuild? | PRD-008 |
