@@ -208,6 +208,126 @@ class TestRunSkillhub:
 
 
 # ---------------------------------------------------------------------------
+# TestScrapeSkillListing — unit tests for category iteration
+# ---------------------------------------------------------------------------
+
+class TestScrapeSkillListing:
+    """Unit tests for scrape_skill_listing() category iteration logic."""
+
+    def _make_card(self, i: int) -> dict:
+        return {
+            "name": f"skill-{i}",
+            "skillhub_url": f"https://skillhub.club/skills/skill-{i}",
+            "description": f"Description {i}.",
+            "rank": "A",
+        }
+
+    def _make_detail(self, i: int) -> dict:
+        return {
+            "full_description": f"Full description {i}.",
+            "github_url": f"https://github.com/user/skill-{i}",
+            "rank": "A",
+            "overall_score": 8.0,
+            "dimension_scores": {},
+        }
+
+    def test_iterates_over_all_categories(self):
+        """scrape_skill_listing crawls uncategorised + each discovered category."""
+        from crawlers.skillhub_crawler import scrape_skill_listing
+
+        call_categories = []
+
+        def fake_get_skill_list_page(session, page, category=""):
+            call_categories.append(category)
+            if page == 1:
+                return ([self._make_card(0)], False)
+            return ([], False)
+
+        with patch("crawlers.skillhub_crawler.discover_categories", return_value=["devops", "testing"]), \
+             patch("crawlers.skillhub_crawler.get_skill_list_page", side_effect=fake_get_skill_list_page), \
+             patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
+             patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
+            mock_robots.return_value.can_fetch = lambda *a: True
+            results = scrape_skill_listing()
+
+        # Should have called with "" (uncategorised), "devops", "testing"
+        assert "" in call_categories
+        assert "devops" in call_categories
+        assert "testing" in call_categories
+
+    def test_deduplicates_skills_across_categories(self):
+        """Skills appearing in multiple categories are only included once."""
+        from crawlers.skillhub_crawler import scrape_skill_listing
+
+        shared_card = self._make_card(0)  # same skillhub_url in both categories
+
+        def fake_get_skill_list_page(session, page, category=""):
+            if page == 1:
+                return ([shared_card], False)
+            return ([], False)
+
+        with patch("crawlers.skillhub_crawler.discover_categories", return_value=["devops", "testing"]), \
+             patch("crawlers.skillhub_crawler.get_skill_list_page", side_effect=fake_get_skill_list_page), \
+             patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
+             patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
+            mock_robots.return_value.can_fetch = lambda *a: True
+            results = scrape_skill_listing()
+
+        # The same skill appeared in 3 crawl targets (uncategorised + 2 categories)
+        # but must only appear once in results
+        assert len(results) == 1
+
+    def test_falls_back_gracefully_when_no_categories(self):
+        """If discover_categories returns [], only the uncategorised pass is done."""
+        from crawlers.skillhub_crawler import scrape_skill_listing
+
+        call_count = []
+
+        def fake_get_skill_list_page(session, page, category=""):
+            call_count.append(category)
+            if page == 1:
+                return ([self._make_card(0)], False)
+            return ([], False)
+
+        with patch("crawlers.skillhub_crawler.discover_categories", return_value=[]), \
+             patch("crawlers.skillhub_crawler.get_skill_list_page", side_effect=fake_get_skill_list_page), \
+             patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
+             patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
+            mock_robots.return_value.can_fetch = lambda *a: True
+            results = scrape_skill_listing()
+
+        assert call_count == [""]  # only uncategorised
+        assert len(results) == 1
+
+    def test_respects_limit_across_categories(self):
+        """limit=N stops after N skills even when multiple categories remain."""
+        from crawlers.skillhub_crawler import scrape_skill_listing
+
+        # Use a counter so each category returns distinct cards (no dedup interference)
+        call_idx = [0]
+
+        def fake_get_skill_list_page(session, page, category=""):
+            if page == 1:
+                i = call_idx[0]
+                call_idx[0] += 2
+                return ([self._make_card(i), self._make_card(i + 1)], False)
+            return ([], False)
+
+        def fake_get_skill_detail(session, url):
+            i = int(url.rsplit("-", 1)[-1])
+            return self._make_detail(i)
+
+        with patch("crawlers.skillhub_crawler.discover_categories", return_value=["devops", "testing"]), \
+             patch("crawlers.skillhub_crawler.get_skill_list_page", side_effect=fake_get_skill_list_page), \
+             patch("crawlers.skillhub_crawler.get_skill_detail", side_effect=fake_get_skill_detail), \
+             patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
+            mock_robots.return_value.can_fetch = lambda *a: True
+            results = scrape_skill_listing(limit=3)
+
+        assert len(results) == 3
+
+
+# ---------------------------------------------------------------------------
 # TestSkillhubCrawlerNetwork — real network calls
 # ---------------------------------------------------------------------------
 
