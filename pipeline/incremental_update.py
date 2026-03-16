@@ -135,16 +135,18 @@ def run_incremental_update(
     index = faiss.read_index(index_path)
     if index.ntotal >= IVF_THRESHOLD:
         raise IncrementalError(
-            f"Index has {index.ntotal} vectors (≥ IVF_THRESHOLD {IVF_THRESHOLD}). "
-            "Large indices require a full rebuild rather than an incremental append. "
-            "Run:\n"
-            "  python pipeline/embed.py --input data/unified_skills.jsonl "
-            "--output-embeddings data/embeddings.npy "
-            "--output-ordered data/unified_skills_ordered.jsonl\n"
-            "  python pipeline/build_index.py --embeddings data/embeddings.npy "
-            "--skills data/unified_skills_ordered.jsonl "
-            "--out-index data/index.faiss --out-meta data/metadata.jsonl "
-            "--out-version data/version.txt --embed-model qwen3-embedding:0.6b"
+            f"Index has {index.ntotal} vectors (≥ IVF_THRESHOLD {IVF_THRESHOLD}).\n"
+            "Incremental updates require IndexFlatIP. To rebuild the FAISS index from\n"
+            "existing embeddings without re-embedding (saves ~60 min):\n\n"
+            "  python pipeline/build_index.py \\\n"
+            "    --embeddings data/embeddings.npy \\\n"
+            "    --skills data/unified_skills_ordered.jsonl \\\n"
+            "    --out-index data/index.faiss --out-meta data/metadata.jsonl \\\n"
+            "    --out-version data/version.txt\n\n"
+            "Or use the convenience flag:\n"
+            "  python pipeline/incremental_update.py --rebuild-index-only\n\n"
+            "For a full rebuild including re-embedding:\n"
+            "  python pipeline/embed.py && python pipeline/build_index.py ..."
         )
 
     # Embed only the new skills
@@ -198,8 +200,35 @@ if __name__ == "__main__":
                         help="Path to existing metadata.jsonl (appended in-place).")
     parser.add_argument("--version", default="data/version.txt",
                         help="Path to version.txt (overwritten with new stats).")
+    parser.add_argument("--embeddings", default="data/embeddings.npy",
+                        help="Path to cached embeddings.npy (used with --rebuild-index-only).")
+    parser.add_argument("--skills", default="data/unified_skills_ordered.jsonl",
+                        help="Path to ordered skills JSONL (used with --rebuild-index-only).")
     parser.add_argument("--ollama-url", default=OLLAMA_URL)
+    parser.add_argument(
+        "--rebuild-index-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip incremental logic and rebuild the FAISS index from cached "
+            "embeddings.npy without re-embedding (saves ~60 min). "
+            "Delegates to pipeline/build_index.py."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.rebuild_index_only:
+        import subprocess as _sp
+        cmd = [
+            sys.executable, "pipeline/build_index.py",
+            "--embeddings", args.embeddings,
+            "--skills", args.skills,
+            "--out-index", args.index,
+            "--out-meta", args.metadata,
+            "--out-version", args.version,
+        ]
+        print("Running:", " ".join(cmd), file=sys.stderr)
+        sys.exit(_sp.run(cmd).returncode)
 
     if not check_ollama_available(args.ollama_url):
         print(f"Error: Ollama not available at {args.ollama_url}", file=sys.stderr)
