@@ -40,7 +40,6 @@ from crawlers.base import (
     fetch_repo_metadata,
     find_skill_md_paths,
     infer_platforms,
-    load_existing_urls,
     load_filter_cache,
     make_session,
     write_jsonl,
