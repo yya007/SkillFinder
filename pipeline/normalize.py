@@ -284,6 +284,8 @@ def build_install_cmds(merged: dict) -> dict[str, str]:
                 cmds["claude_code"] = f"/skill install {name}"
             else:
                 cmds["claude_code"] = f"/plugin install {name}"
+        elif src == "topic":
+            cmds["claude_code"] = f"/plugin install {name}"
         # skillhub: no install command
 
     if "codex" in merged.get("platforms", []):
@@ -296,16 +298,12 @@ def build_install_cmds(merged: dict) -> dict[str, str]:
 # Quality filter
 # ---------------------------------------------------------------------------
 
-def passes_quality_filter(skill: dict) -> bool:
+def passes_quality_filter(skill: dict, min_stars: int = 10) -> bool:
     """Return True if the merged skill record passes the quality bar.
 
-    A skill passes if ANY of the following conditions holds:
-    1. ``quality.stars`` >= 10
-    2. At least one source is in CURATED_SOURCES
-    3. ``quality.skillhub_rank`` is "A" or "S"
-
-    AND the record must have a non-empty description; without one it always
-    fails regardless of other signals.
+    A skill passes if ALL of the following hold:
+    1. ``quality.stars`` >= min_stars  (default 10)
+    2. Non-empty description (always required)
     """
     description = skill.get("description", "")
     if not description:
@@ -313,17 +311,8 @@ def passes_quality_filter(skill: dict) -> bool:
 
     quality = skill.get("quality", {})
     stars = quality.get("stars", 0) or 0
-    skillhub_rank = quality.get("skillhub_rank")
-    sources: list[str] = skill.get("source", [])
 
-    if stars >= 10:
-        return True
-    if any(src in CURATED_SOURCES for src in sources):
-        return True
-    if skillhub_rank in {"A", "S"}:
-        return True
-
-    return False
+    return stars >= min_stars
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +323,7 @@ def normalize(
     raw_paths: list[str],
     output_path: str,
     min_skills: int = 1,
+    min_stars: int = 10,
 ) -> int:
     """Run the full normalization pipeline.
 
@@ -342,6 +332,8 @@ def normalize(
         output_path: Where to write the unified JSONL output.
         min_skills:  Minimum number of output records; raise QualityGateError
                      if the count is below this threshold.
+        min_stars:   Minimum GitHub star count for a skill to pass the quality
+                     filter (default 10).
 
     Returns:
         Number of records written to output_path.
@@ -388,7 +380,7 @@ def normalize(
         merged = merge_records(recs, dedup_key=group_key)
 
         # Quality gate: drop records that don't meet the bar
-        if not passes_quality_filter(merged):
+        if not passes_quality_filter(merged, min_stars=min_stars):
             continue
 
         # Build install commands, then discard is_official (pipeline-only flag)
@@ -454,10 +446,17 @@ if __name__ == "__main__":
         metavar="N",
         help="Minimum number of output records before raising an error (default: 1).",
     )
+    parser.add_argument(
+        "--min-stars",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Minimum GitHub star count to pass quality filter (default: 10).",
+    )
     args = parser.parse_args()
 
     try:
-        count = normalize(args.raw_paths, args.output, min_skills=args.min_skills)
+        count = normalize(args.raw_paths, args.output, min_skills=args.min_skills, min_stars=args.min_stars)
         print(f"Wrote {count} skills to {args.output}")
     except (FileNotFoundError, QualityGateError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -51,7 +51,7 @@ class TestGithubUrlDedup:
         rec1 = {
             "repo_url": "https://github.com/user/myskill.git",
             "name": "myskill", "description": "A skill.", "source": "skillsmp",
-            "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []},
+            "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []},
         }
         rec2 = {
             "repo_url": "https://github.com/user/myskill",
@@ -108,7 +108,7 @@ class TestGithubUrlDedup:
     def test_non_github_url_not_deduped_with_github_url(self, tmp_path):
         """A GitLab skill and a GitHub skill with same name are NOT merged."""
         rec1 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "On GitHub.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
-        rec2 = {"repo_url": "https://gitlab.com/user/myskill", "name": "myskill", "description": "On GitLab.", "source": "clawhub", "raw_metadata": {"categories": []}}
+        rec2 = {"repo_url": "https://gitlab.com/user/myskill", "name": "myskill", "description": "On GitLab.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
         f2.write_text(json.dumps(rec2) + "\n")
@@ -118,7 +118,7 @@ class TestGithubUrlDedup:
     def test_merged_record_has_stable_id(self, tmp_path):
         """Merged record ID equals sha256(canonical_key(repo_url))."""
         repo_url = "https://github.com/user/myskill"
-        rec1 = {"repo_url": repo_url, "name": "myskill", "description": "A skill.", "source": "skillsmp", "raw_metadata": {"stars": 5, "pushed_at": "2026-01-01", "topics": []}}
+        rec1 = {"repo_url": repo_url, "name": "myskill", "description": "A skill.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
         rec2 = {"repo_url": repo_url + ".git", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")
@@ -141,7 +141,7 @@ class TestGithubUrlDedup:
 
     def test_case_insensitive_url_deduplication(self, tmp_path):
         """URLs differing only in case should dedup to the same record."""
-        rec1 = {"repo_url": "https://github.com/User/MySkill", "name": "myskill", "description": "Skill.", "source": "skillsmp", "raw_metadata": {"stars": 3, "pushed_at": "2026-01-01", "topics": []}}
+        rec1 = {"repo_url": "https://github.com/User/MySkill", "name": "myskill", "description": "Skill.", "source": "skillsmp", "raw_metadata": {"stars": 10, "pushed_at": "2026-01-01", "topics": []}}
         rec2 = {"repo_url": "https://github.com/user/myskill", "name": "myskill", "description": "Same skill.", "source": "clawhub", "raw_metadata": {"categories": []}}
         f1, f2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
         f1.write_text(json.dumps(rec1) + "\n")

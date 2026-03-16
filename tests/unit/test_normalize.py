@@ -18,7 +18,6 @@ import os
 import pytest
 
 from pipeline.normalize import (
-    CURATED_SOURCES,
     QualityGateError,
     build_embedding_text,
     build_install_cmds,
@@ -241,18 +240,10 @@ class TestPassesQualityFilter:
         skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 100, "skillhub_rank": None}}
         assert passes_quality_filter(skill) is True
 
-    def test_passes_if_in_curated_source_with_zero_stars(self):
-        for curated in CURATED_SOURCES:
-            skill = {"description": "desc", "source": [curated], "quality": {"stars": 0, "skillhub_rank": None}}
-            assert passes_quality_filter(skill) is True, f"Failed for curated source: {curated}"
-
-    def test_passes_with_skillhub_rank_s(self):
-        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 0, "skillhub_rank": "S"}}
-        assert passes_quality_filter(skill) is True
-
-    def test_passes_with_skillhub_rank_a(self):
-        skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 0, "skillhub_rank": "A"}}
-        assert passes_quality_filter(skill) is True
+    def test_fails_zero_stars_any_source(self):
+        for source in ["skillsmp", "clawhub", "skillhub", "marketplace"]:
+            skill = {"description": "desc", "source": [source], "quality": {"stars": 0, "skillhub_rank": "S"}}
+            assert passes_quality_filter(skill) is False, f"Expected fail for source={source} with 0 stars"
 
     def test_fails_rank_b_with_zero_stars_not_curated(self):
         skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 0, "skillhub_rank": "B"}}
@@ -266,11 +257,12 @@ class TestPassesQualityFilter:
         skill = {"source": ["skillsmp"], "quality": {"stars": 100, "skillhub_rank": "S"}}
         assert passes_quality_filter(skill) is False
 
-    def test_fails_zero_stars_noncurated_no_rank(self, skill_low_quality):
+    def test_fails_zero_stars_no_rank(self, skill_low_quality):
         assert passes_quality_filter(skill_low_quality) is False
 
-    def test_passes_curated_zero_stars(self, skill_curated):
-        assert passes_quality_filter(skill_curated) is True
+    def test_fails_curated_zero_stars(self, skill_curated):
+        """Curated source alone is not sufficient; stars >= 10 is always required."""
+        assert passes_quality_filter(skill_curated) is False
 
     def test_star_count_1_fails(self):
         skill = {"description": "desc", "source": ["skillsmp"], "quality": {"stars": 1, "skillhub_rank": None}}
