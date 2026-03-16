@@ -52,10 +52,11 @@ The pre-built index is included — no build step needed.
 | Claude Code | `git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder` |
 | Codex | `git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder` |
 | OpenClaw | `clawhub install skill-finder` |
-| npm | `npm install -g @yya007/skill-finder` |
 
-For npm, also copy to your agent's skills directory after install:
+Alternatively, install via npm and copy to your agent's skills directory:
+
 ```bash
+npm install -g @yya007/skill-finder
 cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder  # Claude Code
 cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder   # Codex
 ```
