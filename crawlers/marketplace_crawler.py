@@ -57,6 +57,11 @@ TARGET_REPOS: list[str] = [
     "daymade/claude-code-skills",
     "mhattingpete/claude-skills-marketplace",
     "alirezarezvani/claude-skills",
+    "openai/skills",
+    "google-gemini/gemini-skills",
+    "vercel-labs/agent-skills",
+    "awslabs/agent-plugins",
+    "github/awesome-copilot",
 ]
 
 # Repository-search queries used for broader community discovery.

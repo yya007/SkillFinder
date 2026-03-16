@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 # Base search query — finds files named SKILL.md.
 _BASE_QUERY = "filename:SKILL.md"
 
+# Additional base queries to run with the same SIZE_SHARDS × STAR_SHARDS grid.
+# marketplace.json discovers marketplace-format repos; path:.agents/skills covers
+# the Gemini CLI / Codex convention for SKILL.md placement.
+_EXTRA_BASE_QUERIES: list[str] = [
+    "filename:marketplace.json",
+    "path:.agents/skills filename:SKILL.md",
+]
+
 # ---------------------------------------------------------------------------
 # Two-dimensional sharding to stay under GitHub Code Search's 1,000-result
 # hard cap.  Each (size, stars) pair forms a disjoint query cell; the
@@ -92,6 +100,7 @@ def search_skill_repos(
     per_page: int = 30,
     limit: int = None,
     since: str = None,
+    base_query: str = _BASE_QUERY,
 ) -> Iterator[dict]:
     """Search GitHub for repos containing filename:SKILL.md.
 
@@ -124,7 +133,7 @@ def search_skill_repos(
             "--since is not supported by GitHub Code Search and will be ignored."
         )
 
-    query = _BASE_QUERY
+    query = base_query
     if query_extra:
         query = f"{query} {query_extra}"
 
@@ -368,88 +377,96 @@ def run(
     written = 0
 
     shard_cells = list(itertools.product(SIZE_SHARDS, STAR_SHARDS))
+    all_base_queries = [_BASE_QUERY] + _EXTRA_BASE_QUERIES
     logger.info(
-        "Starting crawl: %d shard cells (%d size × %d star buckets)",
-        len(shard_cells), len(SIZE_SHARDS), len(STAR_SHARDS),
+        "Starting crawl: %d shard cells (%d size × %d star buckets) × %d base queries",
+        len(shard_cells), len(SIZE_SHARDS), len(STAR_SHARDS), len(all_base_queries),
     )
 
-    for size_shard, star_shard in shard_cells:
-        shard = f"{size_shard} {star_shard}"
-        logger.info("Searching shard: %s", shard)
-        for item in search_skill_repos(
-            session, query_extra=shard, per_page=30, limit=limit, since=since
-        ):
-            repo = item.get("repository", {})
-            if not repo:
-                continue
+    for base_query in all_base_queries:
+        logger.info("Starting sharded search for base query: %s", base_query)
+        for size_shard, star_shard in shard_cells:
+            shard = f"{size_shard} {star_shard}"
+            logger.info("Searching shard: %s [base: %s]", shard, base_query)
+            for item in search_skill_repos(
+                session, query_extra=shard, per_page=30, limit=limit, since=since,
+                base_query=base_query,
+            ):
+                repo = item.get("repository", {})
+                if not repo:
+                    continue
 
-            owner_login = ""
-            owner = repo.get("owner", {})
-            if isinstance(owner, dict):
-                owner_login = owner.get("login", "")
-            repo_name = repo.get("name", "")
-            full_name = repo.get("full_name", f"{owner_login}/{repo_name}")
+                owner_login = ""
+                owner = repo.get("owner", {})
+                if isinstance(owner, dict):
+                    owner_login = owner.get("login", "")
+                repo_name = repo.get("name", "")
+                full_name = repo.get("full_name", f"{owner_login}/{repo_name}")
 
-            # Dedup across shards
-            if full_name in seen_full_names:
-                continue
-            seen_full_names.add(full_name)
+                # Dedup across shards and base queries
+                if full_name in seen_full_names:
+                    continue
+                seen_full_names.add(full_name)
 
-            # Verify the repo is actually on GitHub
-            html_url = repo.get("html_url", f"https://github.com/{full_name}")
-            repo_url = extract_github_url(html_url)
-            if not repo_url:
-                logger.debug("Skipping non-GitHub repo: %s", html_url)
-                continue
+                # Verify the repo is actually on GitHub
+                html_url = repo.get("html_url", f"https://github.com/{full_name}")
+                repo_url = extract_github_url(html_url)
+                if not repo_url:
+                    logger.debug("Skipping non-GitHub repo: %s", html_url)
+                    continue
 
-            # Check filter cache
-            if repo_url in filter_cache:
-                logger.debug("Skipping %s: in filter cache", repo_url)
-                continue
+                # Check filter cache
+                if repo_url in filter_cache:
+                    logger.debug("Skipping %s: in filter cache", repo_url)
+                    continue
 
-            if repo_url in existing_urls:
-                logger.debug("Skipping already-seen repo: %s", repo_url)
-                continue
+                if repo_url in existing_urls:
+                    logger.debug("Skipping already-seen repo: %s", repo_url)
+                    continue
 
-            # Fetch enriched repo metadata (stars, pushed_at, default_branch)
-            meta = fetch_repo_metadata(session, full_name)
-            repo_enriched = {**repo, **meta}
+                # Fetch enriched repo metadata (stars, pushed_at, default_branch)
+                meta = fetch_repo_metadata(session, full_name)
+                repo_enriched = {**repo, **meta}
 
-            # Fetch SKILL.md content using the exact path from the search result
-            default_branch = meta.get("default_branch", "main")
-            skill_path = item.get("path", "SKILL.md")
-            skill_content = _fetch_skill_md(
-                session, full_name, path=skill_path, default_branch=default_branch
-            )
+                # Fetch SKILL.md content.  For marketplace.json queries the search
+                # result path is the JSON file, not a SKILL.md — fall back to the
+                # repo root so we can still validate via frontmatter name check.
+                default_branch = meta.get("default_branch", "main")
+                if base_query == "filename:marketplace.json":
+                    skill_path = "SKILL.md"
+                else:
+                    skill_path = item.get("path", "SKILL.md")
+                skill_content = _fetch_skill_md(
+                    session, full_name, path=skill_path, default_branch=default_branch
+                )
 
-            # skill_md_url is always set from the code-search path — the file
-            # is known to exist even if content fetch fails (e.g. network hiccup).
-            skill_md_url = (
-                f"https://github.com/{full_name}/blob/{default_branch}/{skill_path}"
-            )
-            record = build_raw_record(
-                repo_enriched,
-                skill_md_content=skill_content,
-                skill_md_url=skill_md_url,
-            )
-            if record is None:
-                logger.debug("Skipping %s: no 'name' in SKILL.md frontmatter", full_name)
-                if filter_cache_path:
-                    from crawlers.base import add_to_filter_cache
-                    add_to_filter_cache(filter_cache_path, repo_url, "not_a_skill")
-                    filter_cache.add(repo_url)
-                continue
-            batch.append(record)
-            existing_urls.add(repo_url)
+                # skill_md_url is always set from the resolved skill_path
+                skill_md_url = (
+                    f"https://github.com/{full_name}/blob/{default_branch}/{skill_path}"
+                )
+                record = build_raw_record(
+                    repo_enriched,
+                    skill_md_content=skill_content,
+                    skill_md_url=skill_md_url,
+                )
+                if record is None:
+                    logger.debug("Skipping %s: no 'name' in SKILL.md frontmatter", full_name)
+                    if filter_cache_path:
+                        from crawlers.base import add_to_filter_cache
+                        add_to_filter_cache(filter_cache_path, repo_url, "not_a_skill")
+                        filter_cache.add(repo_url)
+                    continue
+                batch.append(record)
+                existing_urls.add(repo_url)
 
-            if len(batch) >= batch_size:
+                if len(batch) >= batch_size:
+                    written += write_jsonl(batch, output_path, append=(written > 0 or resume))
+                    batch = []
+
+            # After each cell, flush any accumulated batch before moving to next cell
+            if batch:
                 written += write_jsonl(batch, output_path, append=(written > 0 or resume))
                 batch = []
-
-        # After each cell, flush any accumulated batch before moving to next cell
-        if batch:
-            written += write_jsonl(batch, output_path, append=(written > 0 or resume))
-            batch = []
 
     logger.info("SkillsMP crawler finished: %d records written to %s", written, output_path)
     return written

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import logging
 import os
 import re
@@ -40,8 +41,15 @@ from crawlers.base import (
 # Constants
 # ---------------------------------------------------------------------------
 
-AWESOME_LIST_REPO = "VoltAgent/awesome-openclaw-skills"
-AWESOME_LIST_PATH = "README.md"
+AWESOME_LIST_REPOS: list[tuple[str, str]] = [
+    ("VoltAgent/awesome-openclaw-skills", "README.md"),   # existing
+    ("ComposioHQ/awesome-claude-skills", "README.md"),
+    ("hesreallyhim/awesome-claude-code", "README.md"),    # also has THE_RESOURCES_TABLE.csv — README only for now
+    ("VoltAgent/awesome-agent-skills", "README.md"),
+    ("skillmatic-ai/awesome-agent-skills", "README.md"),
+    ("heilcheng/awesome-agent-skills", "README.md"),
+    ("sickn33/antigravity-awesome-skills", "README.md"),
+]
 
 # Repository-search queries for broader OpenClaw org / topic coverage.
 _OPENCLAW_QUERIES = [
@@ -125,15 +133,20 @@ def _extract_subtree_hint(url: str) -> str | None:
 # Fetch
 # ---------------------------------------------------------------------------
 
-def fetch_awesome_readme(session) -> str:
-    """Fetch raw README.md from VoltAgent/awesome-openclaw-skills via GitHub Contents API.
+def fetch_awesome_readme(session, repo: str, path: str) -> str:
+    """Fetch raw README from a GitHub repo via GitHub Contents API.
+
+    Args:
+        session: A requests.Session from make_session().
+        repo:    Full repo name, e.g. "VoltAgent/awesome-openclaw-skills".
+        path:    File path within the repo, e.g. "README.md".
 
     Returns the decoded text content.
 
     Raises:
         RuntimeError: if the API call fails or the content cannot be decoded.
     """
-    url = _CONTENTS_URL.format(repo=AWESOME_LIST_REPO, path=AWESOME_LIST_PATH)
+    url = _CONTENTS_URL.format(repo=repo, path=path)
     data = github_get(session, url)
 
     # Prefer download_url: it serves the raw file without the 1 MB inline
@@ -155,7 +168,7 @@ def fetch_awesome_readme(session) -> str:
             raise RuntimeError(f"Failed to decode README content: {exc}") from exc
 
     raise RuntimeError(
-        f"Unexpected encoding '{encoding}' from GitHub Contents API for {AWESOME_LIST_REPO}/{AWESOME_LIST_PATH}"
+        f"Unexpected encoding '{encoding}' from GitHub Contents API for {repo}/{path}"
     )
 
 
@@ -213,6 +226,7 @@ def build_raw_record(
     pushed_at: str = "",
     skill_md_url: str = "",
     frontmatter: dict = None,
+    vetted: bool = False,
 ) -> dict | None:
     """Build a raw record from a parsed awesome-list entry.
 
@@ -248,6 +262,8 @@ def build_raw_record(
             "pushed_at": pushed_at,
             "skill_md_url": skill_md_url,
             "platforms": platforms,
+            "safety_scan": True if vetted else None,
+            "safety_scan_date": datetime.date.today().isoformat() if vetted else None,
         },
     }
 
@@ -346,12 +362,18 @@ def run(
         filter_cache = load_filter_cache(filter_cache_path)
         log.info("Filter cache loaded: %d entries", len(filter_cache))
 
-    # --- fetch README ---
-    log.info("Fetching README from %s/%s", AWESOME_LIST_REPO, AWESOME_LIST_PATH)
-    readme_content = fetch_awesome_readme(session)
-
-    # --- parse ---
-    items = parse_awesome_readme(readme_content)
+    # --- fetch and parse all awesome list READMEs ---
+    items: list[dict] = []
+    for awesome_repo, awesome_path in AWESOME_LIST_REPOS:
+        log.info("Fetching README from %s/%s", awesome_repo, awesome_path)
+        try:
+            readme_content = fetch_awesome_readme(session, awesome_repo, awesome_path)
+        except RuntimeError as exc:
+            log.warning("Failed to fetch %s/%s: %s", awesome_repo, awesome_path, exc)
+            continue
+        for parsed_item in parse_awesome_readme(readme_content):
+            parsed_item["_source_repo"] = awesome_repo
+            items.append(parsed_item)
 
     # --- resume: load skill_md_url (preferred) or repo_url from existing output ---
     existing_skill_keys: set[str] = set()
@@ -386,7 +408,8 @@ def run(
     records: list[dict] = []
     for item in items:
         # Build basic record first (validates GitHub URL)
-        basic = build_raw_record(item)
+        _vetted = item.get("_source_repo") == "VoltAgent/awesome-openclaw-skills"
+        basic = build_raw_record(item, vetted=_vetted)
         if basic is None:
             continue
 
@@ -476,6 +499,7 @@ def run(
             pushed_at=meta.get("pushed_at", ""),
             skill_md_url=skill_md_url,
             frontmatter=fm,
+            vetted=_vetted,
         )
         if record is None:
             continue

@@ -182,7 +182,7 @@ class TestFetchAwesomeReadme:
                 "encoding": "base64",
                 "content": base64.b64encode(b"should not be decoded").decode(),
             }
-            content = fetch_awesome_readme(mock_session)
+            content = fetch_awesome_readme(mock_session, "VoltAgent/awesome-openclaw-skills", "README.md")
 
         assert content == raw_content
         # session.get called with the download_url
@@ -203,7 +203,7 @@ class TestFetchAwesomeReadme:
                 "content": encoded,
                 # no download_url key
             }
-            content = fetch_awesome_readme(mock_session)
+            content = fetch_awesome_readme(mock_session, "VoltAgent/awesome-openclaw-skills", "README.md")
 
         assert content == readme_text
         # session.get should NOT have been called (no raw download needed)
@@ -219,7 +219,7 @@ class TestFetchAwesomeReadme:
                 "content": "compressed",
             }
             with pytest.raises(RuntimeError, match="Unexpected encoding"):
-                fetch_awesome_readme(mock_session)
+                fetch_awesome_readme(mock_session, "VoltAgent/awesome-openclaw-skills", "README.md")
 
 
 # ---------------------------------------------------------------------------
@@ -548,14 +548,16 @@ class TestClawhubCrawlerNetwork:
     """Network integration tests — skipped by default."""
 
     def test_fetches_real_awesome_list(self, github_session):
-        from crawlers.clawhub_crawler import fetch_awesome_readme, parse_awesome_readme
-        content = fetch_awesome_readme(github_session)
+        from crawlers.clawhub_crawler import fetch_awesome_readme, parse_awesome_readme, AWESOME_LIST_REPOS
+        repo, path = AWESOME_LIST_REPOS[0]
+        content = fetch_awesome_readme(github_session, repo, path)
         skills = parse_awesome_readme(content)
         assert len(skills) > 10, f"Expected > 10 entries, got {len(skills)}"
 
     def test_all_records_have_github_url(self, github_session):
-        from crawlers.clawhub_crawler import fetch_awesome_readme, parse_awesome_readme, build_raw_record
-        content = fetch_awesome_readme(github_session)
+        from crawlers.clawhub_crawler import fetch_awesome_readme, parse_awesome_readme, build_raw_record, AWESOME_LIST_REPOS
+        repo, path = AWESOME_LIST_REPOS[0]
+        content = fetch_awesome_readme(github_session, repo, path)
         items = parse_awesome_readme(content)
         records = [build_raw_record(item) for item in items if build_raw_record(item) is not None]
         for record in records:
