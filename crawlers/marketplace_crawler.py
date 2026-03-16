@@ -223,6 +223,8 @@ def build_raw_record(entry: dict) -> dict:
             "parent_repo": parent_url,
             "skill_md_url": skill_md_url,
             "platforms": platforms,
+            "stars": entry.get("stars", 0),
+            "pushed_at": entry.get("pushed_at", ""),
         },
     }
 
@@ -431,6 +433,8 @@ def run(
             seen_paths.add(dedup_key)
 
             entry["default_branch"] = default_branch
+            entry["stars"] = repo_meta.get("stargazers_count", 0)
+            entry["pushed_at"] = repo_meta.get("pushed_at", "")
             record = build_raw_record(entry)
             batch.append(record)
 

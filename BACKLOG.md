@@ -26,44 +26,6 @@ automated scanner. It has two gaps:
 
 ---
 
-### SHA256 verification — force-bypass warning
-**Priority: medium** *(from review issue 6, now fixed)*
-`--force` skips SHA verification. Add a visible stderr warning when this path is
-taken so it isn't silently used in scripts.
-
-**File:** `scripts/update_index.py`, `run_update()`.
-
----
-
-### ClawHub install_cmd cross-platform bug
-**Priority: high**
-`pipeline/normalize.py` generates a `claude_code` install_cmd entry for ClawHub
-skills by mapping `/plugin install <name>` — but `/plugin install` is a SkillsMP
-command, not a ClawHub command. ClawHub skills use `clawhub install <name>`.
-This causes silent install failures when an agent blindly executes the command on
-a Claude Code platform.
-
-**Fix:** Update the ClawHub normalizer branch to emit `clawhub install <name>` for
-`openclaw` key; only emit `claude_code` key if the skill is also listed on SkillsMP.
-
-**File:** `pipeline/normalize.py` (ClawHub normalization branch).
-
----
-
-### STAR_SHARDS not exported from skillsmp_crawler
-**Priority: high** *(technical debt introduced during deep crawler work)*
-`crawlers/skillsmp_deep_crawler.py` defines its own copy of `STAR_SHARDS`,
-`SIZE_SHARDS`, and `_BASE_QUERY` because the linter kept reverting additions
-to `skillsmp_crawler.py`. This creates two sources of truth. If shards are
-updated in one file they must be manually synced to the other.
-
-**Fix:** Export `STAR_SHARDS`, `SIZE_SHARDS`, `_BASE_QUERY`, and `_OVERFLOW_THRESHOLD`
-from `skillsmp_crawler.py` and remove the duplicates from `skillsmp_deep_crawler.py`.
-
-**Files:** `crawlers/skillsmp_crawler.py`, `crawlers/skillsmp_deep_crawler.py`.
-
----
-
 ## Features
 
 ### Remote search fallback
@@ -85,18 +47,17 @@ Scope:
 
 ---
 
-### Monorepo dedup collapse via skill_md_url
-**Priority: medium**
-Skills in monorepos (e.g. `anthropics/skills`) share a `repo_url`. The
-deduplication key is `sha256(canonical_repo_url)`, so only the first skill
-encountered per repo survives. Skills keyed on `skill_md_url` avoid this,
-but the normalizer does not consistently prefer `skill_md_url` for dedup.
+### npm/PyPI skill package crawler
+**Priority: low**
+Skills distributed as npm packages (e.g. `@scope/claude-skill-foo`) or PyPI packages
+are not discoverable via GitHub code search or registry crawlers. A future crawler
+could query the npm registry (`https://registry.npmjs.org/-/v1/search?text=claude-skill`)
+and PyPI JSON API (`https://pypi.org/search/?q=claude-skill`) to find packaged skills.
 
-**Fix:** Use `sha256(skill_md_url)` as the primary ID when `skill_md_url` is
-present; fall back to `sha256(repo_url)` only when it is absent. Add a migration
-note to PRD-005 or CHANGELOG.
+**Prerequisite:** Define a packaging convention (must include SKILL.md at package root or
+declare `"skillfinder": true` in package.json / pyproject.toml).
 
-**File:** `pipeline/normalize.py:379`, `docs/prd/PRD-005-ci-cd-release.md`.
+**File:** `crawlers/npm_crawler.py`, `crawlers/pypi_crawler.py` (new files, not yet planned).
 
 ---
 
@@ -144,15 +105,6 @@ period or explicit versioning for the ID scheme.
 
 ---
 
-### Add progress output when auto-starting Ollama
-**Priority: medium** *(review issue 10)*
-`ensure_ollama()` polls silently for 10 seconds. Add a `print("Starting Ollama…")`
-before the loop and a confirmation when ready.
-
-**File:** `scripts/search.py`, `ensure_ollama()`.
-
----
-
 ### Report line numbers on JSON parse errors in incremental_update.py
 **Priority: low** *(review issue 11)*
 `json.loads(line)` in `load_existing_ids()` and `find_new_skills()` raises
@@ -181,28 +133,81 @@ incremental vs. full rebuild and when to use each.
 
 ---
 
-## Testing
+## Crawler Expansion (from PRD-007 backlog research)
 
-### Zero test coverage for skillsmp_deep_crawler
+### High-priority new registries — official org repos
 **Priority: high**
-`crawlers/skillsmp_deep_crawler.py` has no unit or integration tests. Key
-scenarios not covered: state file creation and resume, date-shard exhaustion,
-per-cell overflow detection, `--cell` flag single-cell mode, atomic state save
-on error.
+Add to `marketplace_crawler.py` as known target repos:
+- `openai/skills` — Official Codex skills catalog
+- `google-gemini/gemini-skills` — Official Gemini CLI skills
+- `vercel-labs/agent-skills` — Vercel official skills
+- `awslabs/agent-plugins` — AWS official; released Feb 2026
+- `github/awesome-copilot` — 25k stars; has `skills/` + `marketplace.json`
 
-**File:** `tests/test_deep_crawler.py` (new file needed).
+**File:** `crawlers/marketplace_crawler.py` (TARGET_REPOS list).
 
 ---
 
-### Zero test coverage for incremental_update.py
+### High-priority awesome lists to parse
+**Priority: high**
+Add new ClawHub-style crawling for:
+- `ComposioHQ/awesome-claude-skills` (44k stars)
+- `hesreallyhim/awesome-claude-code` (28k stars; also `THE_RESOURCES_TABLE.csv`)
+- `VoltAgent/awesome-agent-skills` (11k stars)
+- `skillmatic-ai/awesome-agent-skills`
+- `heilcheng/awesome-agent-skills`
+- `sickn33/antigravity-awesome-skills`
+
+**File:** `crawlers/clawhub_crawler.py` (AWESOME_LISTS constant).
+
+---
+
+### New GitHub topic tags for topic_crawler
+**Priority: high**
+Extend TOPIC_QUERIES with: `claude-code-plugins`, `gemini-skills`,
+`gemini-cli-skills`, `opencode-skills`, `antigravity-skills`, `cursor-skills`,
+`skill-md`, `agent-plugins`, `kiro-skill`, `roo-code-skill`.
+
+**File:** `crawlers/topic_crawler.py` (TOPIC_QUERIES list).
+
+---
+
+### New filename patterns for skillsmp_crawler
+**Priority: high**
+- `filename:AGENTS.md` — OpenAI Codex alternative (needs heuristic to filter non-skill repos)
+- `filename:marketplace.json` — discovers marketplace-format repos
+- `path:.agents/skills filename:SKILL.md` — Gemini CLI / Codex convention
+
+**File:** `crawlers/skillsmp_crawler.py`.
+
+---
+
+### Web registries: skills.sh, agentskill.sh
 **Priority: medium**
-`pipeline/incremental_update.py` is exercised only indirectly. Add unit tests
-for `load_existing_ids()`, `find_new_skills()`, `merge_metadata()`, and the
-IVF_THRESHOLD blocking logic.
+- `skills.sh` (88k skills) — check `skills.sh/llms.txt` for structured index
+- `agentskill.sh` (110k skills) — check `agentskill-sh/agentskill-mcp` for API
+- `agentskills.io/llms.txt` — standard body's own index
+- `claude-plugins.dev` — auto-indexes GitHub SKILL.md files
 
-**File:** `tests/test_incremental_update.py` (new file needed).
+Research needed: do these expose a public JSON index or require scraping?
+(PRD-007 open question #2)
+
+**File:** new `crawlers/skills_sh_crawler.py` (or similar).
 
 ---
+
+## Code Quality
+
+### Remove dead CURATED_SOURCES constant from normalize.py
+**Priority: low**
+After removing curated-source bypass from `passes_quality_filter()`,
+`CURATED_SOURCES` (line 28) is defined but never referenced. Remove it.
+
+**File:** `pipeline/normalize.py:28`.
+
+---
+
+## Testing
 
 ### Crawler integration tests require live GitHub API
 **Priority: medium**
@@ -214,13 +219,3 @@ logic can be tested in CI without network access.
 **File:** `tests/test_integration.py`, `requirements-dev.txt`.
 
 ---
-
-### Missing edge-case coverage in test_update_index.py
-**Priority: medium**
-`tests/test_update_index.py` does not cover:
-- `read_local_version()` with malformed date string → should raise `ValueError`
-- `needs_update()` with unparseable tag → should raise `ValueError`
-- `extract_artifact()` with path-traversal member (e.g. `../../etc/passwd`)
-- `run_update()` with no `.tar.gz` asset in release
-
-**File:** `tests/test_update_index.py`.

@@ -43,6 +43,13 @@ from crawlers.base import (
 AWESOME_LIST_REPO = "VoltAgent/awesome-openclaw-skills"
 AWESOME_LIST_PATH = "README.md"
 
+# Repository-search queries for broader OpenClaw org / topic coverage.
+_OPENCLAW_QUERIES = [
+    "org:openclaw",
+    "topic:openclaw",
+    "topic:openclaw-skill",
+]
+
 # GitHub Contents API endpoint for a file
 _CONTENTS_URL = "https://api.github.com/repos/{repo}/contents/{path}"
 
@@ -246,6 +253,57 @@ def build_raw_record(
 
 
 # ---------------------------------------------------------------------------
+# OpenClaw org / topic discovery
+# ---------------------------------------------------------------------------
+
+def _discover_openclaw_repos(session, limit: int = 500) -> list[str]:
+    """Discover repos in the openclaw org and with openclaw topics via GitHub search.
+
+    Queries each entry in _OPENCLAW_QUERIES against the repository search API,
+    collecting up to `limit` unique "{owner}/{repo}" full names.
+
+    Args:
+        session: A requests.Session from make_session().
+        limit:   Maximum number of unique repos to return.
+
+    Returns:
+        Deduplicated list of full repo names, at most `limit` entries.
+    """
+    seen: set[str] = set()
+    results: list[str] = []
+
+    for query in _OPENCLAW_QUERIES:
+        page = 1
+        while len(results) < limit:
+            try:
+                data = github_get(
+                    session,
+                    f"{GITHUB_API}/search/repositories",
+                    params={"q": query, "per_page": 100, "page": page},
+                )
+            except RuntimeError as exc:
+                log.warning("OpenClaw repo search failed for %r (page %d): %s", query, page, exc)
+                break
+
+            items = data.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                fn = item.get("full_name", "")
+                if fn and fn not in seen:
+                    seen.add(fn)
+                    results.append(fn)
+
+            if len(items) < 100:
+                break
+            page += 1
+
+    log.info("OpenClaw discovery: found %d repos across %d queries", len(results), len(_OPENCLAW_QUERIES))
+    return results[:limit]
+
+
+# ---------------------------------------------------------------------------
 # Main run function
 # ---------------------------------------------------------------------------
 
@@ -427,6 +485,101 @@ def run(
         if limit is not None and len(records) >= limit:
             log.info("Reached limit of %d records; stopping.", limit)
             break
+
+    # --- discover additional OpenClaw org / topic repos (requires auth to avoid rate limits) ---
+    discovered = _discover_openclaw_repos(session, limit=500) if token else []
+    log.info("Processing %d discovered OpenClaw repos", len(discovered))
+
+    # Already-processed repos (from awesome list phase)
+    already_processed_repos: set[str] = {ru for (ru, _) in seen_skill_keys}
+
+    for full_name in discovered:
+        if limit is not None and len(records) >= limit:
+            break
+
+        repo_url = f"https://github.com/{full_name}"
+
+        # Skip repos already covered by the awesome list
+        if repo_url in already_processed_repos:
+            log.debug("Skipping %s: already processed from awesome list", repo_url)
+            continue
+
+        # Skip repos with no SKILL.md (from filter cache)
+        if repo_url in filter_cache:
+            log.debug("Skipping %s: in filter cache", repo_url)
+            continue
+
+        # Fetch metadata + SKILL.md paths (reuse cache if available)
+        if full_name in _repo_cache:
+            meta, skill_md_paths = _repo_cache[full_name]
+            if skill_md_paths is None:
+                skill_md_paths = []
+        else:
+            meta = fetch_repo_metadata(session, full_name)
+            skill_md_paths = find_skill_md_paths(session, full_name)
+            _repo_cache[full_name] = (meta, skill_md_paths)
+            if not skill_md_paths:
+                if filter_cache_path:
+                    add_to_filter_cache(filter_cache_path, repo_url, "no_skill_md")
+                    filter_cache.add(repo_url)
+
+        if not skill_md_paths:
+            continue
+
+        default_branch = meta.get("default_branch", "main")
+        repo_name = full_name.split("/")[-1]
+
+        for skill_path in skill_md_paths:
+            if limit is not None and len(records) >= limit:
+                break
+
+            skill_md_url = f"{repo_url}/blob/{default_branch}/{skill_path}"
+
+            # Dedup within this run
+            skill_run_key = (repo_url, skill_path)
+            if skill_run_key in seen_skill_keys:
+                log.debug("Skipping duplicate skill: %s/%s", repo_url, skill_path)
+                continue
+            if resume:
+                already_seen = skill_md_url in existing_skill_keys or (
+                    len(skill_md_paths) == 1 and repo_url in existing_skill_keys
+                )
+                if already_seen:
+                    log.debug("Skipping already-crawled skill (resume): %s", skill_md_url)
+                    continue
+            seen_skill_keys.add(skill_run_key)
+
+            # Fetch SKILL.md for name/description/platform detection
+            fm: dict = {}
+            skill_content = _fetch_skill_md(
+                session, full_name, path=skill_path, default_branch=default_branch
+            )
+            if skill_content:
+                fm = _parse_frontmatter(skill_content)
+
+            # Derive name from frontmatter or path/repo
+            skill_dir = skill_path.rsplit("/SKILL.md", 1)[0] if "/" in skill_path else ""
+            item_name = fm.get("name") or (skill_dir.split("/")[-1] if skill_dir else repo_name)
+            item_description = fm.get("description", "")
+
+            item = {
+                "name": item_name,
+                "url": repo_url,
+                "description": item_description,
+                "category": "",
+            }
+
+            record = build_raw_record(
+                item,
+                stars=meta.get("stargazers_count", 0),
+                pushed_at=meta.get("pushed_at", ""),
+                skill_md_url=skill_md_url,
+                frontmatter=fm,
+            )
+            if record is None:
+                continue
+
+            records.append(record)
 
     # --- write ---
     written = write_jsonl(records, output_path, append=resume)

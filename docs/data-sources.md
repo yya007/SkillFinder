@@ -7,10 +7,11 @@
 | Source | Est. Skills | Access Method | Quality Signal |
 |--------|-------------|---------------|----------------|
 | **SkillsMP** (skillsmp.com) | 400,000+ | GitHub Search API (`filename:SKILL.md`) + raw content fetch | Stars, last_updated |
-| **ClawHub / OpenClaw** | 5,400+ | Parse `VoltAgent/awesome-openclaw-skills` README.md; ClawHub REST API as secondary | VirusTotal scan result, categories |
+| **ClawHub / OpenClaw** | 5,400+ | Parse `VoltAgent/awesome-openclaw-skills` README.md + org/topic repo search | VirusTotal scan result, categories |
 | **SkillHub** (skillhub.club) | 7,000+ | Web scraping | S/A/B/C rank across 5 dimensions |
 | **Anthropic Official** | ~50 | GitHub API (`anthropics/skills` + known marketplace repos) | Official, production-tested |
 | **Community Marketplaces** | ~500 | Clone repos, parse `marketplace.json` | Stars, forks, recency |
+| **GitHub Topics** | varies | GitHub repo search (`topic:claude-skill`, `topic:agent-skill`, etc.) | Stars |
 
 ---
 
@@ -31,13 +32,32 @@ Output: `data/raw/skillsmp.jsonl`
 
 ### ClawHub / OpenClaw (`crawlers/clawhub_crawler.py`)
 
-Primary: parse `VoltAgent/awesome-openclaw-skills` README.md. Format is category headers (`## Category`) followed by lines of `- [name](url) — description`. Extract name, URL, description, category.
+Two-phase crawl:
 
-Secondary: if ClawHub REST API is accessible, query it directly. Tertiary: scrape clawhub.io skill pages.
+1. **Awesome list** — parse `VoltAgent/awesome-openclaw-skills` README.md. Format is category headers (`## Category`) followed by lines of `- [name](url) — description`. Subtree URLs (`.../tree/branch/path`) are resolved directly without the Trees API to handle large monorepos.
+2. **Org/topic discovery** — query GitHub repository search for `org:openclaw`, `topic:openclaw`, and `topic:openclaw-skill`. Repos already covered by the awesome list are skipped to avoid double-counting.
 
 Each record that comes from ClawHub includes `safety_scan` field from VirusTotal results.
 
+Source tag: `"clawhub"`. Install command: `clawhub install <name>` (openclaw platform).
+
 Output: `data/raw/clawhub.jsonl`
+
+### GitHub Topics (`crawlers/topic_crawler.py`)
+
+Searches GitHub for repos tagged with skill-related topics:
+- Claude Code: `topic:claude-skill`, `topic:claude-code-skill`, `topic:claude-skills`, `topic:claude-code-skills`
+- OpenClaw: `topic:openclaw-skill`, `topic:openclaw-skills`
+- Codex: `topic:codex-skill`, `topic:codex-skills`
+- Generic: `topic:agent-skill`, `topic:agent-skills`
+
+(org:openclaw searches and awesome-list are handled by `clawhub_crawler.py`.)
+
+For each discovered repo, fetches `SKILL.md` (at any path), parses frontmatter, and emits a record. Repos already present in other raw JSONL files (`--data-dir`) are skipped to avoid redundancy.
+
+Source tag: `"topic"` — not in `CURATED_SOURCES`, so requires `stars >= 10` to pass the quality filter. Install command: `/plugin install <name>` (claude_code platform).
+
+Output: `data/raw/topic.jsonl`
 
 ### SkillHub (`crawlers/skillhub_crawler.py`)
 

@@ -101,6 +101,7 @@ def ensure_ollama(url: str = OLLAMA_URL) -> "Optional[subprocess.Popen[bytes]]":
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if _is_ollama_running(url):
+            print("Ollama ready.", file=sys.stderr, flush=True)
             return proc
         time.sleep(0.5)
 

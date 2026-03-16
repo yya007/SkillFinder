@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import logging
 import re
 import sys
@@ -50,8 +51,8 @@ from crawlers.base import (
 # ---------------------------------------------------------------------------
 
 SKILLHUB_BASE = "https://skillhub.club"
-_SKILLS_LIST_PATH = "/skills"         # listing endpoint; ?page=N for pagination
-_REQUEST_DELAY = 1.5                  # seconds between HTTP requests (polite crawl)
+_SKILLS_LIST_PATH = "/skills"         # listing endpoint; ?category=X&page=N for pagination
+_REQUEST_DELAY = 0.5                  # seconds between HTTP requests (polite crawl)
 _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfinder)"
 
 log = logging.getLogger(__name__)
@@ -123,11 +124,43 @@ def _can_fetch(rp: RobotFileParser, url: str) -> bool:
 # Listing page scraper
 # ---------------------------------------------------------------------------
 
-def get_skill_list_page(session, page: int = 1) -> tuple[list[dict], bool]:
+def discover_categories(session) -> list[str]:
+    """Fetch the SkillHub skills index page and return all category slugs.
+
+    Parses ``?category=<slug>&page=1`` links from the pagination bar.
+    Returns a deduplicated list of category slug strings, e.g.
+    ["development", "devops", "testing", ...].  Returns an empty list
+    on failure (caller falls back to uncategorised pagination).
+    """
+    try:
+        time.sleep(_REQUEST_DELAY)
+        resp = session.get(f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}", timeout=30)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("Could not fetch category list: %s", exc)
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    cats: list[str] = []
+    seen: set[str] = set()
+    for a in soup.select("a[href*='category=']"):
+        href = a.get("href", "")
+        try:
+            cat = href.split("category=")[1].split("&")[0]
+        except IndexError:
+            continue
+        if cat and cat not in seen:
+            seen.add(cat)
+            cats.append(cat)
+    log.info("Discovered %d SkillHub categories: %s", len(cats), cats)
+    return cats
+
+
+def get_skill_list_page(session, page: int = 1, category: str = "") -> tuple[list[dict], bool]:
     """Fetch one page of the SkillHub skill listing.
 
-    Sends a GET request to ``{SKILLHUB_BASE}/skills?page={page}`` and parses
-    the HTML to find skill cards.
+    Sends a GET request to ``{SKILLHUB_BASE}/skills?category={category}&page={page}``
+    and parses the HTML to find skill cards.
 
     Each partial skill dict has at minimum:
         name          (str)  — skill display name
@@ -143,7 +176,11 @@ def get_skill_list_page(session, page: int = 1) -> tuple[list[dict], bool]:
     time.sleep(_REQUEST_DELAY)
 
     url = f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}"
-    params = {"page": page} if page > 1 else {}
+    params: dict = {}
+    if category:
+        params["category"] = category
+    if page > 1:
+        params["page"] = page
     resp = session.get(url, params=params, timeout=30)
     resp.raise_for_status()
 
@@ -403,11 +440,34 @@ def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
     return skill_md_paths[0]
 
 
+def load_existing_skillhub_urls(output_path: str) -> set[str]:
+    """Load the set of skillhub_urls already present in an existing JSONL output file.
+
+    Used in resume mode to skip detail-page fetches for skills we have already
+    crawled, avoiding redundant HTTP requests to skillhub.club.
+    """
+    urls: set[str] = set()
+    try:
+        with open(output_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                skillhub_url = record.get("raw_metadata", {}).get("skillhub_url", "")
+                if skillhub_url:
+                    urls.add(skillhub_url)
+    except FileNotFoundError:
+        pass
+    return urls
+
+
 def scrape_skill_listing(
     session=None,
     limit: int = None,
     token: str = None,
     filter_cache_path: str = None,
+    skip_skillhub_urls: set | None = None,
 ) -> list[dict]:
     """Scrape all SkillHub skills and return unified parsed skill dicts.
 
@@ -416,10 +476,12 @@ def scrape_skill_listing(
     dimension_scores, skillhub_url, stars, pushed_at, skill_md_url, platforms.
 
     Args:
-        session:           requests.Session for SkillHub HTTP (creates one if None).
-        limit:             Stop after this many skills (for testing).
-        token:             GitHub personal access token for fetching repo metadata.
-        filter_cache_path: Path to shared filter cache JSONL file.
+        session:             requests.Session for SkillHub HTTP (creates one if None).
+        limit:               Stop after this many skills (for testing).
+        token:               GitHub personal access token for fetching repo metadata.
+        filter_cache_path:   Path to shared filter cache JSONL file.
+        skip_skillhub_urls:  Set of skillhub_urls to skip without fetching detail pages
+                             (used in resume mode to avoid redundant HTTP requests).
 
     Returns:
         List of unified skill dicts.
@@ -438,91 +500,114 @@ def scrape_skill_listing(
 
     rp = _load_robots(session)
     results: list[dict] = []
-    page = 1
+    seen_urls: set[str] = set()  # dedup across categories by skillhub_url
 
-    while True:
-        list_url = f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?page={page}"
-        if not _can_fetch(rp, list_url):
-            log.warning("robots.txt disallows %s; stopping.", list_url)
-            break
+    # Discover all categories; "" = uncategorised (catches skills not in any category)
+    categories = discover_categories(session)
+    crawl_targets = [""] + categories
+    log.info("Crawling %d targets: uncategorised + %d categories", len(crawl_targets), len(categories))
 
-        try:
-            skill_cards, has_more = get_skill_list_page(session, page=page)
-        except Exception as exc:
-            log.error("Failed to fetch listing page %d: %s", page, exc)
-            break
+    for category in crawl_targets:
+        page = 1
+        while True:
+            list_url = (
+                f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?category={category}&page={page}"
+                if category else
+                f"{SKILLHUB_BASE}{_SKILLS_LIST_PATH}?page={page}"
+            )
+            if not _can_fetch(rp, list_url):
+                log.warning("robots.txt disallows %s; stopping.", list_url)
+                break
 
-        if not skill_cards:
-            break
-
-        for basic in skill_cards:
-            detail_url = basic.get("skillhub_url", "")
-            if not _can_fetch(rp, detail_url):
-                continue
             try:
-                detail = get_skill_detail(session, detail_url) or {}
+                skill_cards, has_more = get_skill_list_page(session, page=page, category=category)
             except Exception as exc:
-                log.warning("Failed detail page %s: %s", detail_url, exc)
-                detail = {}
+                log.error("Failed to fetch listing page %d (category=%r): %s", page, category, exc)
+                break
 
-            github_url = detail.get("github_url", "")
-            stars = 0
-            pushed_at = ""
-            skill_md_url = ""
-            platforms = ["claude_code"]
+            if not skill_cards:
+                break
 
-            # Check filter cache before making GitHub API calls
-            if github_url and github_url in filter_cache:
-                log.debug("Skipping %s: in filter cache", github_url)
-                continue
+            for basic in skill_cards:
+                skillhub_url = basic.get("skillhub_url", "")
 
-            if github_url and github_session:
-                full_name = github_url.removeprefix("https://github.com/")
-                meta = fetch_repo_metadata(github_session, full_name)
-                stars = meta.get("stargazers_count", 0)
-                pushed_at = meta.get("pushed_at", "")
-                default_branch = meta.get("default_branch", "main")
+                # Dedup across categories — same skill may appear in multiple categories
+                if skillhub_url in seen_urls:
+                    continue
+                seen_urls.add(skillhub_url)
 
-                # Use Trees API to find the correct SKILL.md path
-                skill_md_paths = find_skill_md_paths(github_session, full_name)
-                if not skill_md_paths:
-                    if filter_cache_path:
-                        add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
-                        filter_cache.add(github_url)
-                    skill_path = None
-                else:
-                    skill_path = _match_skill_path(basic["name"], skill_md_paths)
+                # Resume mode: skip detail fetch for already-crawled skills
+                if skip_skillhub_urls and skillhub_url in skip_skillhub_urls:
+                    log.debug("Skipping already-crawled skillhub URL: %s", skillhub_url)
+                    continue
 
-                if skill_path:
-                    skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
-                    skill_content = _fetch_skill_md(
-                        github_session, full_name, path=skill_path, default_branch=default_branch
-                    )
-                    if skill_content:
-                        fm = _parse_frontmatter(skill_content)
-                        platforms = infer_platforms(fm, "skillhub")
+                detail_url = skillhub_url
+                if not _can_fetch(rp, detail_url):
+                    continue
+                try:
+                    detail = get_skill_detail(session, detail_url) or {}
+                except Exception as exc:
+                    log.warning("Failed detail page %s: %s", detail_url, exc)
+                    detail = {}
 
-            unified = {
-                "name": basic["name"],
-                "description": detail.get("full_description") or basic.get("description", ""),
-                "repo_url": github_url,
-                "rank": detail.get("rank") or basic.get("rank", ""),
-                "overall_score": detail.get("overall_score", 0.0),
-                "dimension_scores": detail.get("dimension_scores", {}),
-                "skillhub_url": detail_url,
-                "stars": stars,
-                "pushed_at": pushed_at,
-                "skill_md_url": skill_md_url,
-                "platforms": platforms,
-            }
-            results.append(unified)
+                github_url = detail.get("github_url", "")
+                stars = 0
+                pushed_at = ""
+                skill_md_url = ""
+                platforms = ["claude_code"]
 
-            if limit is not None and len(results) >= limit:
-                return results
+                # Check filter cache before making GitHub API calls
+                if github_url and github_url in filter_cache:
+                    log.debug("Skipping %s: in filter cache", github_url)
+                    continue
 
-        if not has_more:
-            break
-        page += 1
+                if github_url and github_session:
+                    full_name = github_url.removeprefix("https://github.com/")
+                    meta = fetch_repo_metadata(github_session, full_name)
+                    stars = meta.get("stargazers_count", 0)
+                    pushed_at = meta.get("pushed_at", "")
+                    default_branch = meta.get("default_branch", "main")
+
+                    # Use Trees API to find the correct SKILL.md path
+                    skill_md_paths = find_skill_md_paths(github_session, full_name)
+                    if not skill_md_paths:
+                        if filter_cache_path:
+                            add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
+                            filter_cache.add(github_url)
+                        skill_path = None
+                    else:
+                        skill_path = _match_skill_path(basic["name"], skill_md_paths)
+
+                    if skill_path:
+                        skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
+                        skill_content = _fetch_skill_md(
+                            github_session, full_name, path=skill_path, default_branch=default_branch
+                        )
+                        if skill_content:
+                            fm = _parse_frontmatter(skill_content)
+                            platforms = infer_platforms(fm, "skillhub")
+
+                unified = {
+                    "name": basic["name"],
+                    "description": detail.get("full_description") or basic.get("description", ""),
+                    "repo_url": github_url,
+                    "rank": detail.get("rank") or basic.get("rank", ""),
+                    "overall_score": detail.get("overall_score", 0.0),
+                    "dimension_scores": detail.get("dimension_scores", {}),
+                    "skillhub_url": detail_url,
+                    "stars": stars,
+                    "pushed_at": pushed_at,
+                    "skill_md_url": skill_md_url,
+                    "platforms": platforms,
+                }
+                results.append(unified)
+
+                if limit is not None and len(results) >= limit:
+                    return results
+
+            if not has_more:
+                break
+            page += 1
 
     return results
 
@@ -554,12 +639,21 @@ def run(
     session.headers.update({"User-Agent": _USER_AGENT})
 
     existing_urls: set[str] = set()
+    skip_skillhub_urls: set[str] = set()
     if resume:
         existing_urls = load_existing_urls(output_path)
-        log.info("Resume mode: %d repos already in output", len(existing_urls))
+        skip_skillhub_urls = load_existing_skillhub_urls(output_path)
+        log.info(
+            "Resume mode: %d repos already in output, %d skillhub URLs to skip",
+            len(existing_urls), len(skip_skillhub_urls),
+        )
 
     skills = scrape_skill_listing(
-        session=session, limit=limit, token=token, filter_cache_path=filter_cache_path
+        session=session,
+        limit=limit,
+        token=token,
+        filter_cache_path=filter_cache_path,
+        skip_skillhub_urls=skip_skillhub_urls,
     )
 
     batch: list[dict] = []
