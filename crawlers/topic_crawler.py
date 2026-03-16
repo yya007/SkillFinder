@@ -69,6 +69,17 @@ TOPIC_QUERIES: list[str] = [
     # Generic agent skills
     "topic:agent-skill",
     "topic:agent-skills",
+    # Extended ecosystem
+    "topic:claude-code-plugins",
+    "topic:gemini-skills",
+    "topic:gemini-cli-skills",
+    "topic:opencode-skills",
+    "topic:antigravity-skills",
+    "topic:cursor-skills",
+    "topic:skill-md",
+    "topic:agent-plugins",
+    "topic:kiro-skill",
+    "topic:roo-code-skill",
 ]
 
 

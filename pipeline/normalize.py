@@ -158,6 +158,7 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
     platforms: set[str] = set()
     skill_md_url: str = ""
     safety_scan: bool | None = None
+    safety_scan_date: str | None = None
     is_official = False  # True only for anthropics/* marketplace skills
 
     for rec in records:
@@ -207,6 +208,8 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
         # Safety scan — prefer clawhub
         if src == "clawhub" and meta.get("safety_scan") is not None:
             safety_scan = meta["safety_scan"]
+            if safety_scan_date is None:
+                safety_scan_date = meta.get("safety_scan_date")
 
         # SkillHub rank and score
         if src == "skillhub":
@@ -237,6 +240,7 @@ def merge_records(records: list[dict], dedup_key: str | None = None) -> dict:
         "platforms": sorted(platforms),
         "skill_md_url": skill_md_url,
         "safety_scan": safety_scan,
+        "safety_scan_date": safety_scan_date,
         "is_official": is_official,
         "install_cmd": {},          # populated separately by build_install_cmds
         "quality": {
