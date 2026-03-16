@@ -248,7 +248,7 @@ class TestScrapeSkillListing:
              patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
              patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
             mock_robots.return_value.can_fetch = lambda *a: True
-            results = scrape_skill_listing()
+            results = list(scrape_skill_listing())
 
         # Should have called with "" (uncategorised), "devops", "testing"
         assert "" in call_categories
@@ -271,7 +271,7 @@ class TestScrapeSkillListing:
              patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
              patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
             mock_robots.return_value.can_fetch = lambda *a: True
-            results = scrape_skill_listing()
+            results = list(scrape_skill_listing())
 
         # The same skill appeared in 3 crawl targets (uncategorised + 2 categories)
         # but must only appear once in results
@@ -294,7 +294,7 @@ class TestScrapeSkillListing:
              patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
              patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
             mock_robots.return_value.can_fetch = lambda *a: True
-            results = scrape_skill_listing()
+            results = list(scrape_skill_listing())
 
         assert call_count == [""]  # only uncategorised
         assert len(results) == 1
@@ -322,7 +322,7 @@ class TestScrapeSkillListing:
              patch("crawlers.skillhub_crawler.get_skill_detail", side_effect=fake_get_skill_detail), \
              patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
             mock_robots.return_value.can_fetch = lambda *a: True
-            results = scrape_skill_listing(limit=3)
+            results = list(scrape_skill_listing(limit=3))
 
         assert len(results) == 3
 

@@ -467,10 +467,10 @@ def scrape_skill_listing(
     token: str = None,
     filter_cache_path: str = None,
     skip_skillhub_urls: set | None = None,
-) -> list[dict]:
-    """Scrape all SkillHub skills and return unified parsed skill dicts.
+):
+    """Scrape all SkillHub skills, yielding unified parsed skill dicts one at a time.
 
-    Handles pagination and detail-page fetching internally. Each returned
+    Handles pagination and detail-page fetching internally. Each yielded
     dict has keys: name, description, repo_url, rank, overall_score,
     dimension_scores, skillhub_url, stars, pushed_at, skill_md_url, platforms.
 
@@ -482,8 +482,8 @@ def scrape_skill_listing(
         skip_skillhub_urls:  Set of skillhub_urls to skip without fetching detail pages
                              (used in resume mode to avoid redundant HTTP requests).
 
-    Returns:
-        List of unified skill dicts.
+    Yields:
+        Unified skill dicts.
     """
     if session is None:
         session = make_session()
@@ -498,7 +498,7 @@ def scrape_skill_listing(
         log.info("Filter cache loaded: %d entries", len(filter_cache))
 
     rp = _load_robots(session)
-    results: list[dict] = []
+    yielded = 0
     seen_urls: set[str] = set()  # dedup across categories by skillhub_url
     # Cache repo_full_name → (meta, default_branch, skill_md_paths) to avoid
     # repeated GitHub API calls for the same monorepo.
@@ -556,7 +556,7 @@ def scrape_skill_listing(
                 stars = 0
                 pushed_at = ""
                 skill_md_url = ""
-                platforms = ["claude_code"]
+                platforms = infer_platforms({}, "skillhub")
 
                 # Check filter cache before making GitHub API calls
                 if github_url and github_url in filter_cache:
@@ -608,16 +608,18 @@ def scrape_skill_listing(
                     "skill_md_url": skill_md_url,
                     "platforms": platforms,
                 }
-                results.append(unified)
+                yield unified
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
 
-                if limit is not None and len(results) >= limit:
-                    return results
-
+            log.info(
+                "category=%r page=%d  seen_urls=%d  yielded=%d",
+                category or "(all)", page, len(seen_urls), yielded,
+            )
             if not has_more:
                 break
             page += 1
-
-    return results
 
 
 # ---------------------------------------------------------------------------
