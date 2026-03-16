@@ -353,3 +353,30 @@ class TestNormalize:
             assert "is_official" not in record, (
                 f"is_official should be stripped from output but found in: {record.get('name')}"
             )
+
+    def test_tombstone_records_are_skipped(self, tmp_path):
+        """Tombstone records are excluded from normalized output."""
+        raw = tmp_path / "raw.jsonl"
+        raw.write_text(
+            json.dumps({
+                "repo_url": "https://github.com/user/skill",
+                "name": "skill",
+                "description": "A skill",
+                "source": "skillsmp",
+                "raw_metadata": {
+                    "stars": 20,
+                    "pushed_at": "2026-01-01",
+                    "skill_md_url": "",
+                },
+            }) + "\n" +
+            json.dumps({
+                "tombstone": True,
+                "repo_url": "https://github.com/user/old",
+                "skill_md_url": "...",
+                "source": "skillsmp",
+                "deleted_at": "2026-03-01",
+            }) + "\n"
+        )
+        out = tmp_path / "out.jsonl"
+        count = normalize([str(raw)], str(out), min_stars=0)
+        assert count == 1  # tombstone excluded

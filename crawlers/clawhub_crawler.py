@@ -337,6 +337,7 @@ def run(
     limit: int = None,
     resume: bool = False,
     filter_cache_path: str = None,
+    mode: str = "full",
 ) -> int:
     """Run the ClawHub crawler.
 
@@ -347,10 +348,15 @@ def run(
         resume:            If True, skip skills already present in output_path.
         filter_cache_path: Path to shared filter cache JSONL file.  Pass None
                            to disable filter-cache behaviour.
+        mode:              Crawl mode: full, incremental, metadata, or discover.
+                           incremental behaves like resume=True.
 
     Returns:
         Number of new records written.
     """
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
+        resume = True
     import json as _json
     from pathlib import Path as _Path
 
@@ -397,9 +403,9 @@ def run(
                     pass
         log.info("Resume mode: %d skill keys already in output", len(existing_skill_keys))
 
-    # Cache (meta dict, skill_md_paths list) per base repo_url to avoid
+    # Cache (meta dict, skill_md_paths dict) per base repo_url to avoid
     # repeated API calls for monorepos (e.g. openclaw/skills with 800+ entries).
-    _repo_cache: dict[str, tuple[dict, list[str]]] = {}
+    _repo_cache: dict[str, tuple[dict, dict[str, str] | None]] = {}
 
     # Track (repo_url, skill_path) pairs written in this run to avoid dups.
     seen_skill_keys: set[tuple[str, str]] = set()
@@ -425,7 +431,7 @@ def run(
         # entirely and construct the exact path directly.
         full_name = repo_url.removeprefix("https://github.com/")
         subtree_hint = _extract_subtree_hint(item.get("url", ""))
-        skill_md_paths: list[str] | None = None  # populated only in slow path
+        skill_md_paths: dict[str, str] | None = None  # populated only in slow path
 
         if subtree_hint:
             # Fast path: path is known from the URL — no Trees API needed.
@@ -451,12 +457,12 @@ def run(
             else:
                 meta, skill_md_paths = _repo_cache[full_name]
                 if skill_md_paths is None:
-                    skill_md_paths = []
+                    skill_md_paths = {}
 
             if not skill_md_paths:
                 continue
             elif len(skill_md_paths) == 1:
-                skill_path = skill_md_paths[0]
+                skill_path = next(iter(skill_md_paths))
             else:
                 log.debug("Multiple SKILL.md paths but no subtree hint for %s; skipping", repo_url)
                 continue
@@ -537,7 +543,7 @@ def run(
         if full_name in _repo_cache:
             meta, skill_md_paths = _repo_cache[full_name]
             if skill_md_paths is None:
-                skill_md_paths = []
+                skill_md_paths = {}
         else:
             meta = fetch_repo_metadata(session, full_name)
             skill_md_paths = find_skill_md_paths(session, full_name)
@@ -640,9 +646,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stop after writing N records (for testing)",
     )
     p.add_argument(
+        "--mode",
+        choices=["full", "incremental", "metadata", "discover"],
+        default="full",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
-        help="Skip repos already present in the output file",
+        help="[Deprecated] Alias for --mode incremental",
     )
     p.add_argument(
         "--filter-cache",
@@ -672,6 +684,13 @@ def main(argv: list[str] | None = None) -> int:
     token = args.token or os.environ.get("GITHUB_TOKEN")
     filter_cache_path = args.filter_cache or None
 
+    # Deprecated flag aliases
+    if args.resume:
+        import warnings
+        warnings.warn("--resume is deprecated, use --mode incremental", DeprecationWarning)
+        if args.mode == "full":
+            args.mode = "incremental"
+
     try:
         count = run(
             output_path=args.output,
@@ -679,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             resume=args.resume,
             filter_cache_path=filter_cache_path,
+            mode=args.mode,
         )
         print(f"Wrote {count} records to {args.output}", file=sys.stderr)
         return 0

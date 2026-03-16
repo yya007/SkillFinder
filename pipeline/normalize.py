@@ -365,6 +365,13 @@ def normalize(
                     raise ValueError(
                         f"JSON parse error in {path}:{lineno}: {exc}"
                     ) from exc
+                # Skip tombstone records (skills deleted in incremental crawl)
+                if record.get("tombstone"):
+                    logger.debug(
+                        "Skipping tombstone record: %s",
+                        record.get("skill_md_url", record.get("repo_url", "")),
+                    )
+                    continue
                 repo_url = record.get("repo_url", "")
                 if not repo_url:
                     logger.warning("Skipping record at %s:%d: missing repo_url", path, lineno)

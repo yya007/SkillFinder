@@ -253,7 +253,7 @@ class TestRunClawhub:
              patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             count = run(out, limit=2)
@@ -277,7 +277,7 @@ class TestRunClawhub:
              patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_with_non_github
             mock_meta.return_value = self._mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             count = run(out)
@@ -297,7 +297,7 @@ class TestRunClawhub:
              patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
             out = str(tmp_path / "out.jsonl")
             run(out, limit=1)
@@ -326,7 +326,7 @@ class TestRunClawhub:
              patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
             count = run(str(out), resume=True)
 
@@ -502,7 +502,7 @@ class TestDiscoverOpenclawRepos:
              patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
             mock_fetch.return_value = "# Awesome List\n\nNo skills.\n"
             mock_meta.return_value = meta
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = discovered_skill_md
             mock_discover.return_value = ["openclaw/discovered-skill"]
 
@@ -528,7 +528,7 @@ class TestDiscoverOpenclawRepos:
              patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
             mock_fetch.return_value = SAMPLE_AWESOME_README  # k8s-deployer, docker-manager, test-runner
             mock_meta.return_value = meta
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
             mock_discover.return_value = ["user/k8s-deployer", "user/docker-manager"]
 

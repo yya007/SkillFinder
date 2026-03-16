@@ -333,6 +333,7 @@ def run(
     since: str = None,
     resume: bool = False,
     filter_cache_path: str = None,
+    mode: str = "full",
 ) -> int:
     """Run the SkillsMP crawler end to end.
 
@@ -351,10 +352,16 @@ def run(
                            set, repos in the cache are skipped and newly
                            rejected repos are added to it.  Pass None to
                            disable filter-cache behaviour.
+        mode:              Crawl mode: full, incremental, metadata, or discover.
+                           incremental behaves like resume=True.
 
     Returns:
         Number of records written.
     """
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
+        resume = True
+
     session = make_session(token=token)
 
     # Load filter cache
@@ -506,9 +513,15 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Only include repos pushed after this date",
     )
     parser.add_argument(
+        "--mode",
+        choices=["full", "incremental", "metadata", "discover"],
+        default="full",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
-        help="Skip repos already present in the output file",
+        help="[Deprecated] Alias for --mode incremental",
     )
     parser.add_argument(
         "--filter-cache",
@@ -538,6 +551,13 @@ def main(argv=None) -> int:
             "No GitHub token provided. Unauthenticated requests are heavily rate-limited."
         )
 
+    # Deprecated flag aliases
+    if args.resume:
+        import warnings
+        warnings.warn("--resume is deprecated, use --mode incremental", DeprecationWarning)
+        if args.mode == "full":
+            args.mode = "incremental"
+
     filter_cache_path = args.filter_cache or None
 
     try:
@@ -548,6 +568,7 @@ def main(argv=None) -> int:
             since=args.since,
             resume=args.resume,
             filter_cache_path=filter_cache_path,
+            mode=args.mode,
         )
         print(f"Done: {count} records written to {args.output}")
         return 0

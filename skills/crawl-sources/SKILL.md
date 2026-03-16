@@ -99,10 +99,22 @@ python -m crawlers.topic_crawler -o data/raw/topic.jsonl --data-dir data/raw
 | Flag | Effect |
 |------|--------|
 | `--limit N` | Cap at N records — use for quick tests |
-| `--resume` | Resume from last checkpoint (SkillsMP, ClawHub, topic) |
-| `--since YYYY-MM-DD` | Only fetch skills updated after this date (SkillsMP) |
+| `--mode incremental` | Skip repos already present in the output file (preferred over `--resume`) |
+| `--mode full` | Complete re-crawl (default) |
+| `--mode metadata` | Refresh stars/ETags only, skip content fetch |
+| `--mode discover` | Only fetch repos pushed since last run (date-filtered search) |
+| `--resume` | **Deprecated** — use `--mode incremental` instead |
+| `--since YYYY-MM-DD` | Only include repos pushed after this date (SkillsMP) |
 | `--log-level DEBUG` | Verbose output |
 | `--filter-cache FILE` | Path to dedup cache (default: `data/filter_cache.jsonl`) |
+
+**Orchestrator (runs all crawlers in the right order):**
+
+```bash
+python pipeline/update_crawl.py --mode incremental
+python pipeline/update_crawl.py --mode full --sources clawhub,skillsmp
+python pipeline/update_crawl.py --mode incremental --chain  # also runs normalize/embed/build
+```
 
 ---
 

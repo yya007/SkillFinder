@@ -223,6 +223,7 @@ def run(
     resume: bool = False,
     filter_cache_path: str = None,
     existing_raw_dirs: list[str] = None,
+    mode: str = "full",
 ) -> int:
     """Run the topic crawler.
 
@@ -236,10 +237,15 @@ def run(
         existing_raw_dirs: List of directories containing other raw crawler
                            output. Repos found there are skipped to avoid
                            re-crawling already-covered repos.
+        mode:              Crawl mode: full, incremental, metadata, or discover.
+                           incremental behaves like resume=True.
 
     Returns:
         Number of new records written.
     """
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
+        resume = True
     import json as _json
 
     session = make_session(token=token)
@@ -409,9 +415,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stop after writing N records (for testing)",
     )
     p.add_argument(
+        "--mode",
+        choices=["full", "incremental", "metadata", "discover"],
+        default="full",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
-        help="Skip skills already present in the output file",
+        help="[Deprecated] Alias for --mode incremental",
     )
     p.add_argument(
         "--filter-cache",
@@ -449,6 +461,13 @@ def main(argv: list[str] | None = None) -> int:
     token = args.token or os.environ.get("GITHUB_TOKEN")
     filter_cache_path = args.filter_cache or None
 
+    # Deprecated flag aliases
+    if args.resume:
+        import warnings
+        warnings.warn("--resume is deprecated, use --mode incremental", DeprecationWarning)
+        if args.mode == "full":
+            args.mode = "incremental"
+
     try:
         count = run(
             output_path=args.output,
@@ -457,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             filter_cache_path=filter_cache_path,
             existing_raw_dirs=args.data_dirs,
+            mode=args.mode,
         )
         print(f"Wrote {count} records to {args.output}", file=sys.stderr)
         return 0
