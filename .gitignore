@@ -18,10 +18,9 @@ env/
 # Pipeline intermediates — not needed at runtime
 data/raw/
 data/embeddings.npy
-data/unified_skills.jsonl
-data/unified_skills_ordered.jsonl
-data/filter_cache.jsonl
+data/*.jsonl
 data/trial/
+data/logs/
 
 # Incremental crawl state (machine-local; cached by CI, not committed)
 data/crawl_state/
