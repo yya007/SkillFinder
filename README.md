@@ -2,7 +2,7 @@
 
 **Universal agent skill discovery — find the right skill in seconds.**
 
-SkillFinder searches 10,000+ curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
+SkillFinder searches <!-- stats:skill-count:start -->14,000+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
 
 **Indexes skills for:** Claude Code · OpenClaw · Codex
 
@@ -269,15 +269,30 @@ pytest tests/quality/ -v -m quality
 
 ## Coverage
 
-| Registry | Crawler | Skills crawled |
-|----------|---------|---------------|
-| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | ~500 (quality-filtered) |
-| ClawHub / OpenClaw | `clawhub_crawler.py` | ~3,500 |
-| SkillHub | `skillhub_crawler.py` | ~500 |
-| Anthropic official marketplace | `marketplace_crawler.py` | ~50 |
-| GitHub topics | `topic_crawler.py` | varies |
+<!-- stats:coverage-table:start -->
+| Registry | Crawler | Skills in index |
+|----------|---------|----------------:|
+| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 368 |
+| ClawHub / OpenClaw | `clawhub_crawler.py` | 1,130 |
+| SkillHub | `skillhub_crawler.py` | 139 |
+| Anthropic official marketplace | `marketplace_crawler.py` | 12,698 |
+| GitHub topics | `topic_crawler.py` | 0 |
+| **Total (after dedup)** | | **14,306** |
+<!-- stats:coverage-table:end -->
 
-After deduplication and quality filtering: **~4,500 unique skills** in the default index (updated weekly).
+## Star Distribution
+
+<!-- stats:index-distribution:start -->
+| Stars | Skills | Distribution |
+|-------|-------:|:-------------|
+| 10–49 | 772 | █░░░░░░░░░░░░░░░░░░░ 5% |
+| 50–99 | 285 | █░░░░░░░░░░░░░░░░░░░ 2% |
+| 100–499 | 9,353 | █████████████░░░░░░░ 65% |
+| 500–999 | 171 | █░░░░░░░░░░░░░░░░░░░ 1% |
+| 1k–5k | 1,832 | ███░░░░░░░░░░░░░░░░░ 13% |
+| 5k+ | 1,893 | ███░░░░░░░░░░░░░░░░░ 13% |
+| **Total** | **14,306** | |
+<!-- stats:index-distribution:end -->
 
 ---
 

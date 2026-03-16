@@ -428,7 +428,6 @@ class TestFormatResults:
         results = [{"sim_score": 0.9, **s} for s in skills_for_search[:2]]
         output = format_results(results, as_json=True)
         parsed = json.loads(output)
-        assert "safety_notice" in parsed
         assert isinstance(parsed["results"], list)
         assert len(parsed["results"]) == 2
 
@@ -439,18 +438,6 @@ class TestFormatResults:
         item = parsed["results"][0]
         for field in ("sim_score", "name", "description", "repo_url"):
             assert field in item, f"Missing field: {field}"
-
-    def test_json_output_contains_safety_notice(self, skill):
-        results = [{"sim_score": 0.85, **skill}]
-        output = format_results(results, as_json=True)
-        parsed = json.loads(output)
-        assert "safety_notice" in parsed
-        assert "third-party" in parsed["safety_notice"].lower()
-
-    def test_human_readable_output_contains_safety_notice(self, skill):
-        results = [{"sim_score": 0.85, **skill}]
-        output = format_results(results, as_json=False)
-        assert "third-party" in output.lower()
 
     def test_human_readable_output_contains_names(self, skills_for_search):
         results = [{"sim_score": 0.9, **skills_for_search[0]}]
@@ -480,4 +467,3 @@ class TestFormatResults:
         json_out = format_results([], as_json=True)
         parsed = json.loads(json_out)
         assert parsed["results"] == []
-        assert "safety_notice" in parsed

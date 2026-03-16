@@ -301,21 +301,14 @@ def search(
 # Output formatting
 # ---------------------------------------------------------------------------
 
-SAFETY_NOTICE = (
-    "NOTE: Skills are third-party code. Always review a skill's repository "
-    "before installing it. The SkillFinder index does not vet or endorse any skill."
-)
-
-
 def format_results(results: list[dict], as_json: bool = False) -> str:
     """Format search results as JSON or human-readable text.
 
-    JSON mode: returns an object with a ``safety_notice`` field and a
-    ``results`` array (sim_score, name, description, repo_url, install_cmd,
-    quality per item).
+    JSON mode: returns an object with a ``results`` array (sim_score, name,
+    description, repo_url, install_cmd, quality per item).
 
-    Human-readable mode: prints a safety notice header, then one result block
-    per skill with name, description, and repo URL.
+    Human-readable mode: prints one result block per skill with name,
+    description, and repo URL.
     """
     if as_json:
         output_items = []
@@ -331,11 +324,11 @@ def format_results(results: list[dict], as_json: bool = False) -> str:
             item["install_cmd"] = r.get("install_cmd", {})
             item["quality"] = r.get("quality", {})
             output_items.append(item)
-        return json.dumps({"safety_notice": SAFETY_NOTICE, "results": output_items}, indent=2)
+        return json.dumps({"results": output_items}, indent=2)
     else:
         if not results:
             return "No results found."
-        lines = [f"[!] {SAFETY_NOTICE}", ""]
+        lines: list[str] = []
         for i, r in enumerate(results, 1):
             name = r.get("name", "(unknown)")
             description = r.get("description", "")
