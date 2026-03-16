@@ -1,0 +1,44 @@
+{
+  "name": "@yya007/skill-finder",
+  "version": "1.0.0",
+  "description": "Universal agent skill discovery — search 14,000+ curated agent skills from all major registries using natural language. Runs entirely locally via FAISS. No API calls, no latency.",
+  "files": [
+    "scripts/",
+    "SKILL.md",
+    "plugin.json"
+  ],
+  "scripts": {
+    "postinstall": "node -e \"var m='\\n=== SkillFinder installed ===\\n\\nFinish setup (run once):\\n  1. pip install -r scripts/requirements.txt\\n  2. ollama pull qwen3-embedding:0.6b\\n  3. python scripts/update_index.py\\n\\nThen ask your agent: \\'find a skill for X\\'\\n'; process.stdout.write(m)\""
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "skills",
+    "skill-finder",
+    "skill-discovery",
+    "claude",
+    "claude-code",
+    "codex",
+    "openclaw",
+    "faiss",
+    "vector-search",
+    "semantic-search",
+    "llm-tools"
+  ],
+  "author": {
+    "name": "yya007",
+    "url": "https://github.com/yya007"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yya007/SkillFinder.git"
+  },
+  "homepage": "https://github.com/yya007/SkillFinder#readme",
+  "bugs": {
+    "url": "https://github.com/yya007/SkillFinder/issues"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

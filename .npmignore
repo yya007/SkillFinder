@@ -1,0 +1,33 @@
+# CI-only — not needed by end users
+crawlers/
+pipeline/
+tests/
+docs/
+logs/
+data/
+.github/
+
+# Dev config
+.pytest_cache/
+.ruff_cache/
+pytest.ini
+requirements-dev.txt
+requirements-ci.txt
+
+# Project meta (dev-only)
+BACKLOG.md
+CLAUDE.md
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.egg-info/
+dist/
+build/
+
+# Git
+.git/
+.gitignore

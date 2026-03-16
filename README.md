@@ -43,7 +43,28 @@ Want me to fetch the full SKILL.md for any of these before you install?
 
 ### Install
 
-**Claude Code**
+**npm (minimal install — recommended)**
+
+Install only the runtime files (no crawlers, tests, or CI tooling):
+
+```bash
+npm install -g @yya007/skill-finder
+pip install -r "$(npm root -g)/@yya007/skill-finder/scripts/requirements.txt"
+ollama pull qwen3-embedding:0.6b
+python "$(npm root -g)/@yya007/skill-finder/scripts/update_index.py"
+```
+
+Then copy the skill to your agent's skills directory:
+
+```bash
+# Claude Code
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
+
+# Codex
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder
+```
+
+**Claude Code (git clone)**
 
 ```bash
 git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
@@ -321,6 +342,31 @@ See [`docs/architecture.md`](docs/architecture.md) for the full technical design
 | pyyaml | ≥ 6.0 |
 | Ollama | latest |
 | qwen3-embedding:0.6b | via Ollama |
+
+---
+
+## Acknowledgements
+
+SkillFinder would not be possible without the registries and communities that host and curate agent skills:
+
+| Source | What it provides |
+|--------|-----------------|
+| **[SkillsMP](https://github.com/topics/skill-finder) / GitHub** | Open-indexed `SKILL.md` files discovered via GitHub code search and topic tags |
+| **[ClawHub](https://github.com/ClawHub/awesome-openclaw) / OpenClaw** | Community-curated awesome list of OpenClaw skills with safety scan metadata |
+| **[SkillHub](https://skillhub.dev)** | Ranked and editorially reviewed skill registry |
+| **[Anthropic marketplace](https://claude.ai/skills)** | Official Claude skills maintained by Anthropic |
+
+Thank you to every skill author who publishes their work openly.
+
+---
+
+## Star this repo
+
+If SkillFinder saves you time, please **star this repo** — it helps others discover the project and motivates continued development.
+
+[![Star on GitHub](https://img.shields.io/github/stars/yya007/SkillFinder?style=social)](https://github.com/yya007/SkillFinder)
+
+Also consider starring the skills you find useful — it's the best way to support their authors.
 
 ---
 
