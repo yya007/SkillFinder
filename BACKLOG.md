@@ -133,6 +133,80 @@ incremental vs. full rebuild and when to use each.
 
 ---
 
+## Crawler Expansion (from PRD-007 backlog research)
+
+### High-priority new registries — official org repos
+**Priority: high**
+Add to `marketplace_crawler.py` as known target repos:
+- `openai/skills` — Official Codex skills catalog
+- `google-gemini/gemini-skills` — Official Gemini CLI skills
+- `vercel-labs/agent-skills` — Vercel official skills
+- `awslabs/agent-plugins` — AWS official; released Feb 2026
+- `github/awesome-copilot` — 25k stars; has `skills/` + `marketplace.json`
+
+**File:** `crawlers/marketplace_crawler.py` (TARGET_REPOS list).
+
+---
+
+### High-priority awesome lists to parse
+**Priority: high**
+Add new ClawHub-style crawling for:
+- `ComposioHQ/awesome-claude-skills` (44k stars)
+- `hesreallyhim/awesome-claude-code` (28k stars; also `THE_RESOURCES_TABLE.csv`)
+- `VoltAgent/awesome-agent-skills` (11k stars)
+- `skillmatic-ai/awesome-agent-skills`
+- `heilcheng/awesome-agent-skills`
+- `sickn33/antigravity-awesome-skills`
+
+**File:** `crawlers/clawhub_crawler.py` (AWESOME_LISTS constant).
+
+---
+
+### New GitHub topic tags for topic_crawler
+**Priority: high**
+Extend TOPIC_QUERIES with: `claude-code-plugins`, `gemini-skills`,
+`gemini-cli-skills`, `opencode-skills`, `antigravity-skills`, `cursor-skills`,
+`skill-md`, `agent-plugins`, `kiro-skill`, `roo-code-skill`.
+
+**File:** `crawlers/topic_crawler.py` (TOPIC_QUERIES list).
+
+---
+
+### New filename patterns for skillsmp_crawler
+**Priority: high**
+- `filename:AGENTS.md` — OpenAI Codex alternative (needs heuristic to filter non-skill repos)
+- `filename:marketplace.json` — discovers marketplace-format repos
+- `path:.agents/skills filename:SKILL.md` — Gemini CLI / Codex convention
+
+**File:** `crawlers/skillsmp_crawler.py`.
+
+---
+
+### Web registries: skills.sh, agentskill.sh
+**Priority: medium**
+- `skills.sh` (88k skills) — check `skills.sh/llms.txt` for structured index
+- `agentskill.sh` (110k skills) — check `agentskill-sh/agentskill-mcp` for API
+- `agentskills.io/llms.txt` — standard body's own index
+- `claude-plugins.dev` — auto-indexes GitHub SKILL.md files
+
+Research needed: do these expose a public JSON index or require scraping?
+(PRD-007 open question #2)
+
+**File:** new `crawlers/skills_sh_crawler.py` (or similar).
+
+---
+
+## Code Quality
+
+### Remove dead CURATED_SOURCES constant from normalize.py
+**Priority: low**
+After removing curated-source bypass from `passes_quality_filter()`,
+`CURATED_SOURCES` (line 28) is defined but never referenced. Remove it.
+
+**File:** `pipeline/normalize.py:28`.
+
+---
+
 ## Testing
 
 ### Crawler integration tests require live GitHub API

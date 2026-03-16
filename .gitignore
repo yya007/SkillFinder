@@ -23,6 +23,10 @@ data/unified_skills_ordered.jsonl
 data/filter_cache.jsonl
 data/trial/
 
+# Incremental crawl state (machine-local; cached by CI, not committed)
+data/crawl_state/
+data/deep_crawl_state.json
+
 # Local logs
 logs/
 
