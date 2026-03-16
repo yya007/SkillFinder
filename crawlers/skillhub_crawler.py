@@ -22,7 +22,7 @@ import re
 import sys
 import time
 from urllib.robotparser import RobotFileParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import yaml
 
@@ -40,7 +40,6 @@ from crawlers.base import (
     fetch_repo_metadata,
     find_skill_md_paths,
     infer_platforms,
-    load_existing_urls,
     load_filter_cache,
     make_session,
     write_jsonl,
@@ -222,13 +221,14 @@ def get_skill_list_page(session, page: int = 1, category: str = "") -> tuple[lis
         desc_tag = card.find("p")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        # --- extract rank badge (class "rating-S", "rating-A", etc.) ---
+        # --- extract rank badge (class "rating-s", "rating-a", etc.) ---
+        # BS4 class_ callbacks receive one class string at a time, so use direct class lookup.
         rank = ""
-        rank_tag = card.find(class_=lambda c: c and any(
-            f"rating-{g.lower()}" in " ".join(c).lower() for g in ("S", "A", "B", "C", "F")
-        ) if c else False)
-        if rank_tag:
-            rank = rank_tag.get_text(strip=True)
+        for _grade in ("s", "a", "b", "c", "f"):
+            rank_tag = card.find(class_=f"rating-{_grade}")
+            if rank_tag:
+                rank = rank_tag.get_text(strip=True)
+                break
 
         skills.append(
             {
@@ -247,16 +247,19 @@ def get_skill_list_page(session, page: int = 1, category: str = "") -> tuple[lis
         # Check rel="next"
         next_link = soup.find("a", rel=lambda r: r and "next" in r)
     if next_link is None:
-        # Check for a page number link greater than current page
+        # Check for a page number link greater than current page.
+        # Use urllib.parse to extract the `page` query param correctly —
+        # naive split("page=")[-1] would pick up `per_page=12` as 12.
         page_links = soup.select("a[href*='page=']")
         for pl in page_links:
             href = pl.get("href", "")
             try:
-                pnum = int(href.split("page=")[-1].split("&")[0])
+                qs = parse_qs(urlparse(href).query)
+                pnum = int(qs["page"][0])
                 if pnum > page:
                     has_more = True
                     break
-            except (ValueError, IndexError):
+            except (KeyError, ValueError, IndexError):
                 continue
     else:
         has_more = True
@@ -315,46 +318,36 @@ def get_skill_detail(session, skillhub_url: str) -> dict | None:
             full_description = meta_tag["content"].strip()
             break
 
-    # --- rank (class "rating-S", "rating-A", etc.) ---
+    # --- rank: look for "Grade X" text in a font-pixel span ---
     rank = ""
-    rank_tag = soup.find(class_=lambda c: c and any(
-        f"rating-{g.lower()}" in " ".join(c).lower() for g in ("S", "A", "B", "C", "F")
-    ) if c else False)
-    if rank_tag:
-        rank = rank_tag.get_text(strip=True)
+    for span in soup.find_all("span", class_="font-pixel"):
+        grade_match = re.match(r"^Grade\s+([SABCDF])$", span.get_text(strip=True))
+        if grade_match:
+            rank = grade_match.group(1)
+            break
 
-    # --- overall score ---
+    # --- overall score: the large text-4xl font-pixel span ---
     overall_score: float = 0.0
-    score_tag = soup.find(
-        class_=lambda c: c and any(
-            "overall" in cls.lower() or "score" in cls.lower()
-            for cls in (c if isinstance(c, list) else [c])
-        ) if c else False
-    )
+    score_tag = soup.select_one("span.text-4xl.font-pixel")
     if score_tag:
-        score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", score_tag.get_text())
+        score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", score_tag.get_text(strip=True))
         if score_match:
             try:
                 overall_score = float(score_match.group(1))
             except ValueError:
                 pass
 
-    # --- dimension scores ---
+    # --- dimension scores: each card pairs a font-pixel score with an uppercase label ---
     dimension_scores: dict[str, float] = {}
-    _DIMENSIONS = ("Practicality", "Clarity", "Automation", "Quality", "Impact")
-    for dim in _DIMENSIONS:
-        # Look for a tag whose text contains the dimension name
-        dim_tag = soup.find(
-            lambda tag, d=dim: tag.get_text and d.lower() in tag.get_text().lower()
-            and tag.name not in ("html", "body", "head", "script", "style")
-        )
-        if dim_tag:
-            score_match = re.search(r"\b(\d+(?:\.\d+)?)\b", dim_tag.get_text())
-            if score_match:
-                try:
-                    dimension_scores[dim] = float(score_match.group(1))
-                except ValueError:
-                    pass
+    for card in soup.select("div.text-center.p-3"):
+        score_div = card.find("div", class_="font-pixel")
+        label_div = card.find("div", class_="uppercase")
+        if score_div and label_div:
+            dim_name = label_div.get_text(strip=True).title()
+            try:
+                dimension_scores[dim_name] = float(score_div.get_text(strip=True))
+            except ValueError:
+                pass
 
     return {
         "full_description": full_description,
@@ -440,26 +433,32 @@ def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
     return skill_md_paths[0]
 
 
+def _iter_jsonl(path: str):
+    """Yield parsed dicts from a JSONL file, silently skipping bad lines."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+    except FileNotFoundError:
+        pass
+
+
 def load_existing_skillhub_urls(output_path: str) -> set[str]:
     """Load the set of skillhub_urls already present in an existing JSONL output file.
 
     Used in resume mode to skip detail-page fetches for skills we have already
     crawled, avoiding redundant HTTP requests to skillhub.club.
     """
-    urls: set[str] = set()
-    try:
-        with open(output_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                record = json.loads(line)
-                skillhub_url = record.get("raw_metadata", {}).get("skillhub_url", "")
-                if skillhub_url:
-                    urls.add(skillhub_url)
-    except FileNotFoundError:
-        pass
-    return urls
+    return {
+        record["raw_metadata"]["skillhub_url"]
+        for record in _iter_jsonl(output_path)
+        if record.get("raw_metadata", {}).get("skillhub_url")
+    }
 
 
 def scrape_skill_listing(
@@ -501,6 +500,9 @@ def scrape_skill_listing(
     rp = _load_robots(session)
     results: list[dict] = []
     seen_urls: set[str] = set()  # dedup across categories by skillhub_url
+    # Cache repo_full_name → (meta, default_branch, skill_md_paths) to avoid
+    # repeated GitHub API calls for the same monorepo.
+    repo_paths_cache: dict[str, tuple[dict, str, list[str]]] = {}
 
     # Discover all categories; "" = uncategorised (catches skills not in any category)
     categories = discover_categories(session)
@@ -563,20 +565,26 @@ def scrape_skill_listing(
 
                 if github_url and github_session:
                     full_name = github_url.removeprefix("https://github.com/")
-                    meta = fetch_repo_metadata(github_session, full_name)
-                    stars = meta.get("stargazers_count", 0)
-                    pushed_at = meta.get("pushed_at", "")
-                    default_branch = meta.get("default_branch", "main")
 
-                    # Use Trees API to find the correct SKILL.md path
-                    skill_md_paths = find_skill_md_paths(github_session, full_name)
-                    if not skill_md_paths:
-                        if filter_cache_path:
+                    if full_name in repo_paths_cache:
+                        meta, default_branch, skill_md_paths = repo_paths_cache[full_name]
+                    else:
+                        meta = fetch_repo_metadata(github_session, full_name)
+                        default_branch = meta.get("default_branch", "main")
+                        skill_md_paths = find_skill_md_paths(github_session, full_name)
+                        repo_paths_cache[full_name] = (meta, default_branch, skill_md_paths)
+                        # Only write to filter cache when we're confident no SKILL.md exists.
+                        # find_skill_md_paths returns [] for both "none found" and transient
+                        # errors; we accept the risk of a false negative here rather than
+                        # permanently blocking a repo on a rate-limit hiccup.
+                        if not skill_md_paths and filter_cache_path:
                             add_to_filter_cache(filter_cache_path, github_url, "no_skill_md")
                             filter_cache.add(github_url)
-                        skill_path = None
-                    else:
-                        skill_path = _match_skill_path(basic["name"], skill_md_paths)
+
+                    stars = meta.get("stargazers_count", stars)
+                    pushed_at = meta.get("pushed_at", pushed_at)
+
+                    skill_path = _match_skill_path(basic["name"], skill_md_paths) if skill_md_paths else None
 
                     if skill_path:
                         skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
@@ -638,14 +646,19 @@ def run(
     session = make_session()
     session.headers.update({"User-Agent": _USER_AGENT})
 
-    existing_urls: set[str] = set()
+    # Dedup key: skill_md_url when available (monorepo sub-skills share repo_url),
+    # otherwise repo_url.  Using repo_url alone would block all sub-skills after
+    # the first one from a given monorepo.
+    existing_keys: set[str] = set()
     skip_skillhub_urls: set[str] = set()
     if resume:
-        existing_urls = load_existing_urls(output_path)
+        for line in _iter_jsonl(output_path):
+            skill_md = line.get("raw_metadata", {}).get("skill_md_url", "")
+            existing_keys.add(skill_md if skill_md else line.get("repo_url", ""))
         skip_skillhub_urls = load_existing_skillhub_urls(output_path)
         log.info(
-            "Resume mode: %d repos already in output, %d skillhub URLs to skip",
-            len(existing_urls), len(skip_skillhub_urls),
+            "Resume mode: %d keys already in output, %d skillhub URLs to skip",
+            len(existing_keys), len(skip_skillhub_urls),
         )
 
     skills = scrape_skill_listing(
@@ -667,12 +680,14 @@ def run(
         if record is None:
             continue
 
-        if record["repo_url"] in existing_urls:
-            log.debug("Skipping already-crawled repo: %s", record["repo_url"])
+        skill_md = record.get("raw_metadata", {}).get("skill_md_url", "")
+        dedup_key = skill_md if skill_md else record["repo_url"]
+        if dedup_key in existing_keys:
+            log.debug("Skipping already-crawled skill: %s", dedup_key)
             continue
 
         batch.append(record)
-        existing_urls.add(record["repo_url"])
+        existing_keys.add(dedup_key)
 
         if len(batch) >= 50:
             written += write_jsonl(batch, output_path, append=(written > 0 or resume))
