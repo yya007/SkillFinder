@@ -5,7 +5,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from crawlers.base import extract_github_url, write_jsonl, load_existing_urls
+from crawlers.base import (
+    extract_github_url,
+    write_jsonl,
+    load_existing_urls,
+    load_existing_records,
+    load_crawl_state,
+    save_crawl_state,
+    make_tombstone,
+    fetch_commit_sha,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +166,103 @@ class TestLoadExistingUrls:
 
 
 # ---------------------------------------------------------------------------
+# TestLoadExistingRecords
+# ---------------------------------------------------------------------------
+
+class TestLoadExistingRecords:
+    """Tests for load_existing_records()."""
+
+    def _write_records(self, tmp_path, records):
+        p = tmp_path / "records.jsonl"
+        with p.open("w") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+        return str(p)
+
+    def test_returns_empty_dict_for_missing_file(self, tmp_path):
+        result = load_existing_records(str(tmp_path / "nonexistent.jsonl"))
+        assert result == {}
+
+    def test_returns_empty_dict_for_empty_file(self, tmp_path):
+        p = tmp_path / "empty.jsonl"
+        p.write_text("")
+        assert load_existing_records(str(p)) == {}
+
+    def test_keys_by_skill_md_url_when_present(self, tmp_path):
+        records = [
+            {
+                "repo_url": "https://github.com/user/repo",
+                "name": "skill",
+                "raw_metadata": {"skill_md_url": "https://github.com/user/repo/blob/main/SKILL.md", "stars": 5, "pushed_at": "2026-01-01"},
+            }
+        ]
+        path = self._write_records(tmp_path, records)
+        result = load_existing_records(path)
+        assert "https://github.com/user/repo/blob/main/SKILL.md" in result
+        assert result["https://github.com/user/repo/blob/main/SKILL.md"]["name"] == "skill"
+
+    def test_keys_by_repo_url_when_skill_md_url_absent(self, tmp_path):
+        records = [
+            {
+                "repo_url": "https://github.com/user/repo",
+                "name": "skill",
+                "raw_metadata": {"skill_md_url": "", "stars": 5, "pushed_at": "2026-01-01"},
+            }
+        ]
+        path = self._write_records(tmp_path, records)
+        result = load_existing_records(path)
+        assert "https://github.com/user/repo" in result
+
+    def test_keys_by_repo_url_when_no_raw_metadata(self, tmp_path):
+        records = [
+            {"repo_url": "https://github.com/user/repo2", "name": "skill2"}
+        ]
+        path = self._write_records(tmp_path, records)
+        result = load_existing_records(path)
+        assert "https://github.com/user/repo2" in result
+
+    def test_handles_mixed_keys(self, tmp_path):
+        records = [
+            {
+                "repo_url": "https://github.com/user/a",
+                "raw_metadata": {"skill_md_url": "https://github.com/user/a/blob/main/SKILL.md"},
+            },
+            {
+                "repo_url": "https://github.com/user/b",
+                "raw_metadata": {"skill_md_url": ""},
+            },
+        ]
+        path = self._write_records(tmp_path, records)
+        result = load_existing_records(path)
+        assert "https://github.com/user/a/blob/main/SKILL.md" in result
+        assert "https://github.com/user/b" in result
+        assert len(result) == 2
+
+    def test_skips_malformed_lines(self, tmp_path):
+        p = tmp_path / "bad.jsonl"
+        p.write_text('{"repo_url": "https://github.com/user/good"}\nnot-json\n')
+        result = load_existing_records(str(p))
+        assert len(result) == 1
+        assert "https://github.com/user/good" in result
+
+    def test_returns_full_record(self, tmp_path):
+        records = [
+            {
+                "repo_url": "https://github.com/user/repo",
+                "name": "my-skill",
+                "description": "does stuff",
+                "source": "skillsmp",
+                "raw_metadata": {"skill_md_url": "", "stars": 42, "pushed_at": "2026-02-01"},
+            }
+        ]
+        path = self._write_records(tmp_path, records)
+        result = load_existing_records(path)
+        rec = result["https://github.com/user/repo"]
+        assert rec["name"] == "my-skill"
+        assert rec["raw_metadata"]["stars"] == 42
+
+
+# ---------------------------------------------------------------------------
 # TestFindSkillMdPaths
 # ---------------------------------------------------------------------------
 
@@ -193,7 +299,7 @@ class TestFindSkillMdPaths:
             }
             paths = find_skill_md_paths(mock_session, "user/repo")
 
-        assert paths == []
+        assert paths == {}
 
     def test_falls_back_to_code_search_when_truncated(self):
         from crawlers.base import find_skill_md_paths
@@ -204,7 +310,7 @@ class TestFindSkillMdPaths:
                 "tree": [{"type": "blob", "path": "early/SKILL.md"}],
                 "truncated": True,
             }
-            mock_search.return_value = ["skills/a/SKILL.md", "skills/b/SKILL.md"]
+            mock_search.return_value = {"skills/a/SKILL.md": "", "skills/b/SKILL.md": ""}
 
             paths = find_skill_md_paths(mock_session, "user/monorepo")
 
@@ -219,7 +325,7 @@ class TestFindSkillMdPaths:
         with patch("crawlers.base.github_get", side_effect=RuntimeError("404")):
             paths = find_skill_md_paths(mock_session, "user/missing")
 
-        assert paths == []
+        assert paths == {}
 
     def test_code_search_paginates_multiple_pages(self):
         """_find_skill_md_via_search correctly paginates across 2 pages."""
@@ -230,7 +336,7 @@ class TestFindSkillMdPaths:
 
         call_count = {"n": 0}
 
-        def side_effect(session, url, params=None, timeout=30):
+        def side_effect(session, url, params=None, timeout=30, etag=None):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return {"items": page1_items, "total_count": 150}
@@ -258,7 +364,8 @@ class TestFindSkillMdPaths:
             paths = _find_skill_md_via_search(mock_session, "user/repo")
 
         assert len(paths) == 2
-        assert paths.count("skills/a/SKILL.md") == 1
+        assert "skills/a/SKILL.md" in paths
+        assert "skills/b/SKILL.md" in paths
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +402,102 @@ class TestInferPlatforms:
         from crawlers.base import infer_platforms
         platforms = infer_platforms({"target": "codex"}, "skillsmp")
         assert platforms == ["codex"]
+
+
+# ---------------------------------------------------------------------------
+# TestLoadCrawlState
+# ---------------------------------------------------------------------------
+
+class TestLoadCrawlState:
+    def test_returns_empty_state_when_no_file(self, tmp_path):
+        state = load_crawl_state("testcrawler", state_dir=str(tmp_path))
+        assert state == {"source": "testcrawler", "repos": {}, "awesome_lists": {}}
+
+    def test_loads_existing_state(self, tmp_path):
+        state_file = tmp_path / "testcrawler.json"
+        state_file.write_text(
+            json.dumps({"source": "testcrawler", "repos": {"user/repo": {"last_sha": "abc"}}, "awesome_lists": {}}),
+            encoding="utf-8",
+        )
+        state = load_crawl_state("testcrawler", state_dir=str(tmp_path))
+        assert state["repos"]["user/repo"]["last_sha"] == "abc"
+
+    def test_returns_empty_state_on_corrupt_file(self, tmp_path):
+        state_file = tmp_path / "testcrawler.json"
+        state_file.write_text("not valid json", encoding="utf-8")
+        state = load_crawl_state("testcrawler", state_dir=str(tmp_path))
+        assert state == {"source": "testcrawler", "repos": {}, "awesome_lists": {}}
+
+
+# ---------------------------------------------------------------------------
+# TestSaveCrawlState
+# ---------------------------------------------------------------------------
+
+class TestSaveCrawlState:
+    def test_saves_state_to_file(self, tmp_path):
+        state = {"source": "clawhub", "repos": {"user/r": {"last_sha": "def"}}, "awesome_lists": {}}
+        save_crawl_state(state, "clawhub", state_dir=str(tmp_path))
+        saved = json.loads((tmp_path / "clawhub.json").read_text(encoding="utf-8"))
+        assert saved["repos"]["user/r"]["last_sha"] == "def"
+
+    def test_creates_directory_if_missing(self, tmp_path):
+        nested = tmp_path / "a" / "b" / "state"
+        state = {"source": "x", "repos": {}, "awesome_lists": {}}
+        save_crawl_state(state, "x", state_dir=str(nested))
+        assert (nested / "x.json").exists()
+
+    def test_overwrites_existing_state(self, tmp_path):
+        state_v1 = {"source": "s", "repos": {"r": {"sha": "old"}}, "awesome_lists": {}}
+        save_crawl_state(state_v1, "s", state_dir=str(tmp_path))
+        state_v2 = {"source": "s", "repos": {"r": {"sha": "new"}}, "awesome_lists": {}}
+        save_crawl_state(state_v2, "s", state_dir=str(tmp_path))
+        saved = json.loads((tmp_path / "s.json").read_text(encoding="utf-8"))
+        assert saved["repos"]["r"]["sha"] == "new"
+
+
+# ---------------------------------------------------------------------------
+# TestMakeTombstone
+# ---------------------------------------------------------------------------
+
+class TestMakeTombstone:
+    def test_tombstone_has_required_fields(self):
+        t = make_tombstone(
+            "https://github.com/user/repo",
+            "https://github.com/user/repo/blob/main/SKILL.md",
+            "skillsmp",
+        )
+        assert t["tombstone"] is True
+        assert t["repo_url"] == "https://github.com/user/repo"
+        assert t["skill_md_url"] == "https://github.com/user/repo/blob/main/SKILL.md"
+        assert t["source"] == "skillsmp"
+        assert "deleted_at" in t
+
+    def test_tombstone_deleted_at_is_iso_string(self):
+        t = make_tombstone("https://github.com/u/r", "...", "clawhub")
+        deleted_at = t["deleted_at"]
+        assert "T" in deleted_at  # ISO 8601 format
+
+
+# ---------------------------------------------------------------------------
+# TestFetchCommitSha
+# ---------------------------------------------------------------------------
+
+class TestFetchCommitSha:
+    def test_returns_sha_on_success(self):
+        mock_session = MagicMock()
+        with patch("crawlers.base.github_get") as mock_get:
+            mock_get.return_value = {"sha": "abc123def456"}
+            sha = fetch_commit_sha(mock_session, "user/repo")
+        assert sha == "abc123def456"
+
+    def test_returns_none_on_runtime_error(self):
+        mock_session = MagicMock()
+        with patch("crawlers.base.github_get", side_effect=RuntimeError("not found")):
+            sha = fetch_commit_sha(mock_session, "user/missing")
+        assert sha is None
+
+    def test_returns_none_when_github_get_returns_none(self):
+        mock_session = MagicMock()
+        with patch("crawlers.base.github_get", return_value=None):
+            sha = fetch_commit_sha(mock_session, "user/repo")
+        assert sha is None
