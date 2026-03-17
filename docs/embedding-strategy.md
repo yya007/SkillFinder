@@ -109,7 +109,14 @@ def build_index(embeddings: np.ndarray) -> faiss.Index:
     return index
 ```
 
-For the expected 10K–20K scale, `IndexFlatIP` is always used. `IndexIVFFlat` is available if the corpus grows beyond 50K.
+**Index type by corpus size:**
+
+| Skills | Index type | Notes |
+|--------|-----------|-------|
+| < 30K | `IndexScalarQuantizer` (SQ8) | Exact search, ~4× smaller than float32 |
+| ≥ 30K | `IndexIVFScalarQuantizer` (IVF+SQ8) | Approximate search, same compression |
+
+SQ8 quantizes each float32 dimension to 1 byte using a learned per-dimension scale, reducing index size ~4× (~34 MB at 33K skills vs ~138 MB flat float32) with ~99% recall. Both types require a `train()` call.
 
 **Why inner product after L2 norm = cosine similarity:** after `faiss.normalize_L2(v)`, all vectors have unit length, so inner product equals cosine similarity. This is the standard FAISS pattern for semantic search.
 

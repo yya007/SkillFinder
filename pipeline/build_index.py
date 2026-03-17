@@ -32,7 +32,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 DIM: int = 1024
-IVF_THRESHOLD: int = 50_000   # use IVFFlat for >= this many vectors
+IVF_THRESHOLD: int = 30_000   # use IVFSQFlat for >= this many vectors
 IVF_NLIST: int = 256
 
 
@@ -81,8 +81,11 @@ def l2_normalize(embeddings: np.ndarray) -> np.ndarray:
 def build_index(embeddings: np.ndarray) -> faiss.Index:
     """Build a FAISS index from L2-normalised *embeddings*.
 
-    Uses ``IndexFlatIP`` for corpora smaller than ``IVF_THRESHOLD`` vectors,
-    and ``IndexIVFFlat`` (trained) for larger corpora.
+    Uses ``IndexScalarQuantizer`` (SQ8) for corpora smaller than
+    ``IVF_THRESHOLD`` vectors, and ``IndexIVFScalarQuantizer`` (IVF+SQ8)
+    for larger corpora.  Both require a ``train()`` call to learn per-dimension
+    quantization ranges.  SQ8 reduces index size ~4× vs float32 with ~99%
+    recall.
 
     Parameters
     ----------
@@ -107,11 +110,17 @@ def build_index(embeddings: np.ndarray) -> faiss.Index:
     n = embeddings.shape[0]
 
     if n < IVF_THRESHOLD:
-        index = faiss.IndexFlatIP(DIM)
+        index = faiss.IndexScalarQuantizer(
+            DIM, faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT
+        )
+        index.train(embeddings)
         index.add(embeddings)
     else:
         quantizer = faiss.IndexFlatIP(DIM)
-        index = faiss.IndexIVFFlat(quantizer, DIM, IVF_NLIST, faiss.METRIC_INNER_PRODUCT)
+        index = faiss.IndexIVFScalarQuantizer(
+            quantizer, DIM, IVF_NLIST,
+            faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT,
+        )
         index.train(embeddings)
         index.add(embeddings)
 
