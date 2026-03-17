@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -64,15 +65,24 @@ def _run_crawler(
         cmd += extra_args
 
     logger.info("Starting crawler: %s (mode=%s)", source, mode)
+    start = time.monotonic()
     with log_path.open("w") as log_fh:
         result = subprocess.run(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
+    elapsed = time.monotonic() - start
 
     if result.returncode == 0:
-        logger.info("Crawler %s finished OK", source)
+        record_count = (
+            sum(1 for line in output_path.open(encoding="utf-8") if line.strip())
+            if output_path.exists() else 0
+        )
+        logger.info(
+            "Crawler %s finished OK: %d records in %.1fs (log: %s)",
+            source, record_count, elapsed, log_path,
+        )
     else:
         logger.error(
-            "Crawler %s failed (exit %d); see %s",
-            source, result.returncode, log_path,
+            "Crawler %s failed (exit %d) in %.1fs; see %s",
+            source, result.returncode, elapsed, log_path,
         )
     return result.returncode
 
@@ -92,10 +102,12 @@ def run_all(
     parallel = [s for s in PARALLEL_SOURCES if s in sources]
     sequential = [s for s in SEQUENTIAL_SOURCES if s in sources]
     errors = 0
+    total_start = time.monotonic()
 
     # ------------------------------------------------------------------ phase 1
     # Crawlers that don't use GitHub Search API quota can run in parallel.
     if parallel:
+        phase_start = time.monotonic()
         logger.info("Phase 1: parallel — %s", parallel)
         with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
             futures = {
@@ -105,14 +117,19 @@ def run_all(
             for fut in as_completed(futures):
                 if fut.result() != 0:
                     errors += 1
+        logger.info("Phase 1 done in %.1fs", time.monotonic() - phase_start)
 
     # ------------------------------------------------------------------ phase 2
     # skillsmp and topic both call the GitHub Search API — run sequentially to
     # avoid burning the shared 10 req/min search quota in parallel.
+    if sequential:
+        phase_start = time.monotonic()
     for source in sequential:
         logger.info("Phase 2: sequential — %s", source)
         if _run_crawler(source, mode, token, output_dir) != 0:
             errors += 1
+    if sequential:
+        logger.info("Phase 2 done in %.1fs", time.monotonic() - phase_start)
 
     # ------------------------------------------------------------------ phase 3
     # Optional pipeline chain: normalize → backfill → build index.
@@ -135,6 +152,7 @@ def run_all(
                 errors += 1
                 break
 
+    logger.info("All phases done in %.1fs (%d errors)", time.monotonic() - total_start, errors)
     return errors
 
 
