@@ -235,10 +235,16 @@ def _wait_for_reset(resp: requests.Response, label: str = "") -> None:
 
 _GITHUB_HOST = "github.com"
 
-# Known GitHub owner renames — applied during URL normalization so that old
-# and new repo names produce the same canonical key.
+# Known GitHub owner/repo renames — applied during URL normalization so that
+# old and new names produce the same canonical key.  Specific renames must
+# come before general org renames so they match first.
 _GITHUB_REDIRECTS: dict[str, str] = {
+    # Specific repo renames
+    "github.com/clawdbot/clawdbot": "github.com/openclaw/openclaw",
+    "github.com/moltbot/moltbot": "github.com/openclaw/openclaw",
+    # General org renames
     "github.com/clawdbot/": "github.com/openclaw/",
+    "github.com/moltbot/": "github.com/openclaw/",
 }
 
 # Path segments that indicate we're inside a repo subtree, not the repo root

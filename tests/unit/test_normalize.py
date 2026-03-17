@@ -63,6 +63,27 @@ class TestCanonicalKey:
         with pytest.raises((ValueError, TypeError)):
             canonical_key(None)
 
+    def test_clawdbot_org_redirect(self):
+        """clawdbot/ repos are canonicalized to openclaw/."""
+        assert canonical_key("https://github.com/clawdbot/my-skill") == \
+               "https://github.com/openclaw/my-skill"
+
+    def test_moltbot_org_redirect(self):
+        """moltbot/ repos are canonicalized to openclaw/."""
+        assert canonical_key("https://github.com/moltbot/my-skill") == \
+               "https://github.com/openclaw/my-skill"
+
+    def test_clawdbot_clawdbot_specific_rename(self):
+        """clawdbot/clawdbot is the legacy name for openclaw/openclaw."""
+        assert canonical_key("https://github.com/clawdbot/clawdbot") == \
+               "https://github.com/openclaw/openclaw"
+
+    def test_redirect_enables_cross_source_dedup(self):
+        """A repo crawled as clawdbot/X and openclaw/X produce the same canonical key."""
+        old_url = "https://github.com/clawdbot/awesome-skill"
+        new_url = "https://github.com/openclaw/awesome-skill"
+        assert canonical_key(old_url) == canonical_key(new_url)
+
 
 # ---------------------------------------------------------------------------
 # skill_id

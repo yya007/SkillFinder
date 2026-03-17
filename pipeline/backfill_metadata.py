@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from crawlers.base import fetch_repo_metadata, make_session
@@ -62,23 +64,45 @@ def backfill_file(path: str, session, dry_run: bool = False) -> tuple[int, int]:
 
     log.info("%s: %d / %d records need backfill", path, len(needs_backfill), len(records))
 
-    # Deduplicate GitHub API calls by repo_url
-    repo_cache: dict[str, dict] = {}
-    updated = 0
+    # Collect unique repo full names to fetch (deduplicate API calls)
+    unique_repos: set[str] = set()
+    for _, rec in needs_backfill:
+        fn = _repo_full_name(rec.get("repo_url", ""))
+        if fn:
+            unique_repos.add(fn)
 
-    for idx, (i, rec) in enumerate(needs_backfill):
+    # Parallel fetch with a rate-limit-aware semaphore (max 4 concurrent requests)
+    _semaphore = threading.Semaphore(4)
+    repo_cache: dict[str, dict] = {}
+    repo_cache_lock = threading.Lock()
+
+    def _fetch_one(full_name: str) -> tuple[str, dict]:
+        with _semaphore:
+            meta = fetch_repo_metadata(session, full_name)
+        return full_name, meta
+
+    log.info("Fetching metadata for %d unique repos (parallel, max 4 workers)", len(unique_repos))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_fetch_one, fn): fn for fn in unique_repos}
+        done = 0
+        for fut in as_completed(futures):
+            full_name, meta = fut.result()
+            with repo_cache_lock:
+                repo_cache[full_name] = meta
+            done += 1
+            if done % 50 == 0:
+                log.info("  %d / %d repos fetched", done, len(unique_repos))
+
+    # Apply fetched metadata back to records
+    updated = 0
+    for _, rec in needs_backfill:
         repo_url = rec.get("repo_url", "")
         full_name = _repo_full_name(repo_url)
         if not full_name:
             log.debug("Skipping non-GitHub URL: %s", repo_url)
             continue
 
-        if full_name not in repo_cache:
-            log.debug("[%d/%d] Fetching %s", idx + 1, len(needs_backfill), full_name)
-            meta = fetch_repo_metadata(session, full_name)
-            repo_cache[full_name] = meta
-
-        meta = repo_cache[full_name]
+        meta = repo_cache.get(full_name)
         if not meta:
             continue
 
@@ -88,10 +112,6 @@ def backfill_file(path: str, session, dry_run: bool = False) -> tuple[int, int]:
         if "default_branch" not in raw:
             raw["default_branch"] = meta.get("default_branch", "main")
         updated += 1
-
-        if (idx + 1) % 100 == 0:
-            log.info("  %d / %d done (%d unique repos fetched so far)",
-                     idx + 1, len(needs_backfill), len(repo_cache))
 
     if dry_run:
         log.info("Dry run — not writing back %d updates to %s", updated, path)

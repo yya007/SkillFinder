@@ -40,6 +40,18 @@ class QualityGateError(Exception):
 # URL helpers
 # ---------------------------------------------------------------------------
 
+# Known GitHub owner/repo renames — kept in sync with crawlers/base.py
+# so that old and new URLs produce the same canonical dedup key.
+_GITHUB_REDIRECTS: dict[str, str] = {
+    # Specific repo renames must come before general org renames
+    "github.com/clawdbot/clawdbot": "github.com/openclaw/openclaw",
+    "github.com/moltbot/moltbot": "github.com/openclaw/openclaw",
+    # General org renames
+    "github.com/clawdbot/": "github.com/openclaw/",
+    "github.com/moltbot/": "github.com/openclaw/",
+}
+
+
 def canonical_key(repo_url: str) -> str:
     """Return a stable dedup key for a repo URL.
 
@@ -48,6 +60,7 @@ def canonical_key(repo_url: str) -> str:
       2. Lowercase the URL.
       3. Strip trailing slashes.
       4. Remove a trailing ``.git`` suffix.
+      5. Apply known GitHub owner/repo renames.
 
     Examples::
 
@@ -59,7 +72,12 @@ def canonical_key(repo_url: str) -> str:
     if not repo_url:
         raise ValueError("repo_url must not be empty")
 
-    return repo_url.lower().rstrip("/").removesuffix(".git")
+    url = repo_url.lower().rstrip("/").removesuffix(".git")
+    for old, new in _GITHUB_REDIRECTS.items():
+        if old in url:
+            url = url.replace(old, new, 1)
+            break
+    return url
 
 
 def skill_id(repo_url: str) -> str:
