@@ -13,15 +13,6 @@ triggers:
   - what skill should I use
   - discover agent skills
   - skill for
-  - update the skill index
-  - rebuild the skill index
-  - refresh skill index
-  - how many skills are indexed
-  - crawl skills
-  - re-crawl sources
-  - run crawlers
-  - refresh crawl data
-  - update raw data
 metadata:
   openclaw:
     requires:
@@ -50,105 +41,12 @@ Then describe your task in plain language, e.g.:
 ## How It Works
 
 1. Your description is embedded locally using Qwen3-Embedding-0.6B via Ollama.
-2. The embedding is compared against a pre-built FAISS index of 10,000+ skills.
+2. The embedding is compared against a pre-built FAISS index of 33,000+ skills.
 3. Top matches are returned with name, description, and install command.
 
 The index runs entirely on-device — no network requests are made during search.
 
 ## Agent Instructions
-
-When this skill triggers, check whether the user wants to **crawl raw sources** (Workflow C), **rebuild/update the index** (Workflow A), or **search for skills** (Workflow B), then follow the appropriate workflow below.
-
----
-
-### Workflow C — Crawl Sources
-
-Trigger phrases: "crawl skills", "re-crawl sources", "run crawlers", "refresh crawl data", "update raw data"
-
-Run each step in order. Stop and report any failure immediately.
-
-**Step 1 — Run crawlers**
-```bash
-python pipeline/update_crawl.py --mode incremental
-```
-(Use `--mode full` only if the user explicitly requests a full re-crawl.)
-
-After this step completes, parse the log output for lines matching "finished", "phase", and "phases done" and report to the user:
-- Which sources ran and how many records each produced (from "Crawler X finished OK: N records in T.Xs")
-- Phase wall times (from "Phase 1 done in T.Xs", "Phase 2 done in T.Xs")
-- Total elapsed time (from "All phases done in T.Xs")
-
-**Step 2 — Run quality check**
-```bash
-python pipeline/crawl_report.py
-```
-Report the quality check output to the user verbatim.
-
-If any `[WARN]` lines appear in the output:
-- Mention them explicitly
-- If missing-desc > 10% or 0-stars > 20% for any source, suggest running:
-  ```bash
-  python pipeline/backfill_metadata.py --descriptions
-  ```
-
----
-
-### Workflow A — Index Rebuild
-
-Trigger phrases: "update the skill index", "rebuild the skill index", "refresh skill index", "how many skills are indexed"
-
-Run each step in order. Stop and report any failure immediately.
-
-**Step 1 — Backfill missing metadata (fast, safe to skip if already done)**
-```bash
-python -m pipeline.backfill_metadata data/raw/marketplace.jsonl data/raw/skillhub.jsonl data/raw/skillsmp.jsonl data/raw/clawhub.jsonl
-```
-After this step completes, report the record count from the log output (look for lines with "updated" or "processed").
-
-**Step 2 — Normalize and deduplicate**
-```bash
-python pipeline/normalize.py data/raw/skillsmp.jsonl data/raw/clawhub.jsonl data/raw/skillhub.jsonl data/raw/marketplace.jsonl -o data/unified_skills.jsonl
-```
-After this step completes, parse stderr for lines matching "Dedup", "Dropped", and "Passed" and report them verbatim to the user, e.g.:
-- `Dedup: X raw -> Y unique groups (Z dupes removed)`
-- `Dropped (no description): N -- {source breakdown}`
-- `Dropped (low stars, 0-star): N -- {source breakdown}`
-- `Dropped (low stars, 1-9): N -- {source breakdown}`
-- `Passed quality filter: N`
-
-**Step 3 — Embed** (requires Ollama running with `qwen3-embedding:0.6b`)
-```bash
-python pipeline/embed.py
-```
-After this step completes, report the time taken and number of records embedded from the log output.
-
-**Step 4 — Build FAISS index**
-```bash
-python pipeline/build_index.py --embeddings data/embeddings.npy --skills data/unified_skills.jsonl --out-index data/index.faiss --out-meta data/metadata.jsonl --out-version data/version.txt
-```
-After this step completes, report the final skill count and any SHA checksums printed to stdout.
-
-**Step 5 — Refresh docs**
-```bash
-python pipeline/update_docs.py
-```
-After this step completes, report the stats line from stdout (look for "Total: N skills").
-
-After all steps complete, summarise the pipeline run as a table:
-
-```
-Step              Time      Input     Output    Dropped
-Backfill          Xs        N         —         —
-Normalize         Xs        N         M         K (A no-desc + B low-stars)
-Embed             Xm Xs     M         M         —
-Build index       Xs        M         M         —
-```
-
-Fill in times and counts from the step outputs above.
-
----
-
-### Workflow B — Skill Search
 
 When this skill triggers, follow this workflow exactly.
 
