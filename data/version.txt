@@ -1,5 +1,5 @@
 date: 2026-03-17
 skill_count: 33827
-embed_model: 
-index_sha256: 85d2383fbc1f0ed6b0823010b325b4fb50353fa755c67a4fdee40934514f3097
+embed_model: qwen3-embedding:0.6b
+index_sha256: ae42cedce53b0d902dffc4c00fefe16e88b97ec55a71f106469152676ba7d079
 metadata_sha256: 466f520b9b4e0cf733857f7055177bc3b7865b1fd8a6de383f3ad32b5f8f94e3
