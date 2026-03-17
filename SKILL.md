@@ -50,7 +50,7 @@ Then describe your task in plain language, e.g.:
 ## How It Works
 
 1. Your description is embedded locally using Qwen3-Embedding-0.6B via Ollama.
-2. The embedding is compared against a pre-built FAISS index of 10,000+ skills.
+2. The embedding is compared against a pre-built FAISS index of 33,000+ skills.
 3. Top matches are returned with name, description, and install command.
 
 The index runs entirely on-device — no network requests are made during search.
