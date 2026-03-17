@@ -31,7 +31,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from crawlers.base import fetch_repo_metadata, make_session
+from crawlers.base import fetch_repo_metadata, fetch_skill_md, make_session, parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -142,60 +142,13 @@ def backfill_file(path: str, session, dry_run: bool = False) -> tuple[int, int]:
 def backfill_descriptions(path: str, session, dry_run: bool = False) -> tuple[int, int]:
     """Re-fetch and re-parse SKILL.md for records with an empty description.
 
-    Uses the updated ``_parse_frontmatter`` from each crawler so that files
-    starting with HTML comments (e.g. copyright headers) are handled correctly,
-    and symlinked SKILL.md files are resolved and read.
+    Uses canonical ``fetch_skill_md`` and ``parse_frontmatter`` from
+    crawlers.base, which handle HTML comment headers, symlinks, rate-limit
+    retries, and branch fallback.
 
     Returns:
         (total_records, records_updated)
     """
-    import base64
-    import posixpath
-    import re
-
-    import yaml
-
-    def _parse_frontmatter_fixed(content: str) -> dict:
-        """Local copy of the fixed frontmatter parser (strips leading HTML comments)."""
-        if not content:
-            return {}
-        stripped = re.sub(r"^(\s*<!--.*?-->\s*)+", "", content, flags=re.DOTALL)
-        if not stripped.startswith("---"):
-            return {}
-        end_match = re.search(r"\n---\s*\n", stripped[3:])
-        if not end_match:
-            return {}
-        yaml_text = stripped[3: end_match.start() + 3]
-        try:
-            fm = yaml.safe_load(yaml_text)
-            return fm if isinstance(fm, dict) else {}
-        except yaml.YAMLError:
-            return {}
-
-    def _fetch_content(repo_full_name: str, path: str, branch: str, depth: int = 0) -> str | None:
-        """Fetch file content via Contents API, resolving symlinks."""
-        if depth > 1:
-            return None
-        from crawlers.base import github_get
-        url = f"https://api.github.com/repos/{repo_full_name}/contents/{path}"
-        try:
-            data = github_get(session, url, params={"ref": branch})
-        except RuntimeError:
-            return None
-        if data is None:
-            return None
-        if data.get("type") == "symlink":
-            target = data.get("target", "")
-            if not target:
-                return None
-            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
-            return _fetch_content(repo_full_name, resolved, branch, depth + 1)
-        try:
-            encoded = data.get("content", "")
-            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-        except Exception:
-            return None
-
     p = Path(path)
     records = []
     with p.open(encoding="utf-8") as fh:
@@ -233,15 +186,14 @@ def backfill_descriptions(path: str, session, dry_run: bool = False) -> tuple[in
         branch = parts[3]
         skill_path = "/".join(parts[4:])
 
-        content = _fetch_content(repo_full_name, skill_path, branch)
+        content = fetch_skill_md(session, repo_full_name, skill_path, branch)
         desc = ""
         if content:
-            fm = _parse_frontmatter_fixed(content)
+            fm = parse_frontmatter(content)
             desc = fm.get("description", "")
 
         # Fallback: use GitHub repo description if SKILL.md has none
         if not desc:
-            from crawlers.base import fetch_repo_metadata
             meta_gh = fetch_repo_metadata(session, repo_full_name)
             desc = meta_gh.get("description", "")
 
