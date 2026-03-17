@@ -2,17 +2,22 @@
 crawlers/base.py — Shared utilities for all SkillFinder crawlers.
 
 Public API:
-  GITHUB_API            - Base URL for GitHub REST API
-  make_session()        - Build a requests.Session with retry adapter and auth
-  github_get()          - Rate-limit-aware GET for GitHub API URLs
-  extract_github_url()  - Normalize any URL to a canonical GitHub repo URL
-  fetch_repo_metadata() - Fetch stars/pushed_at/topics/branch for a repo
-  find_skill_md_paths() - Find all SKILL.md paths in a repo via Trees API
-  load_filter_cache()   - Load set of filtered-out canonical URLs
-  add_to_filter_cache() - Append a filtered URL+reason to the cache file
-  infer_platforms()     - Infer target platforms from frontmatter and source
-  write_jsonl()         - Write records to a JSONL file
-  load_existing_urls()  - Load repo_urls already present in an output file
+  GITHUB_API                    - Base URL for GitHub REST API
+  make_session()                - Build a requests.Session with retry adapter and auth
+  github_get()                  - Rate-limit-aware GET for GitHub API URLs
+  extract_github_url()          - Normalize any URL to a canonical GitHub repo URL
+  fetch_repo_metadata()         - Fetch stars/pushed_at/topics/branch for a repo
+  fetch_repo_metadata_with_etag() - ETag-aware version; returns (dict|None, etag|None)
+  fetch_commit_sha()            - Fetch HEAD commit SHA for a repo (one API call)
+  find_skill_md_paths()         - Find all SKILL.md paths → {path: blob_sha} dict
+  load_filter_cache()           - Load set of filtered-out canonical URLs
+  add_to_filter_cache()         - Append a filtered URL+reason to the cache file
+  infer_platforms()             - Infer target platforms from frontmatter and source
+  write_jsonl()                 - Write records to a JSONL file
+  load_existing_urls()          - Load repo_urls already present in an output file
+  load_crawl_state()            - Load per-source crawl state from data/crawl_state/
+  save_crawl_state()            - Atomically save crawl state to data/crawl_state/
+  make_tombstone()              - Create a tombstone record for a deleted skill
 """
 
 from __future__ import annotations
@@ -29,6 +34,16 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
+
+
+def _utc_now_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string (e.g. '2026-03-16T12:00:00Z')."""
+    from datetime import datetime, timezone
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfinder)"
 
@@ -84,7 +99,7 @@ def make_session(token: str = None) -> requests.Session:
 # Rate-limit-aware GET
 # ---------------------------------------------------------------------------
 
-def github_get(session: requests.Session, url: str, params: dict = None, timeout: int = 30) -> dict:
+def github_get(session: requests.Session, url: str, params: dict = None, timeout: int = 30, etag: str = None) -> dict | None:
     """GET a GitHub API URL with automatic rate-limit handling.
 
     Behaviour:
@@ -94,21 +109,30 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
     - Retries up to 3 times with exponential backoff (1s, 4s, 16s) for
       network errors and retriable HTTP errors.
     - Raises RuntimeError if all retries are exhausted on a non-200 response.
+    - When ``etag`` is provided, sends an ``If-None-Match`` header and returns
+      ``None`` on HTTP 304 (Not Modified).
 
     Args:
         session:  A requests.Session (from make_session()).
         url:      Full GitHub API URL.
         params:   Optional query string parameters.
         timeout:  Per-request timeout in seconds.
+        etag:     Optional ETag value from a previous response; when set, a
+                  304 Not Modified response causes the function to return None.
 
     Returns:
         Parsed JSON response body as a dict (or list wrapped in dict under
         special cases — callers should know what shape to expect).
+        Returns None if etag was provided and the server returned 304.
 
     Raises:
-        RuntimeError: if a non-200 status persists after all retries.
+        RuntimeError: if a non-200/304 status persists after all retries.
     """
     last_exc: Exception | None = None
+
+    extra_headers: dict = {}
+    if etag:
+        extra_headers["If-None-Match"] = etag
 
     for attempt, delay in enumerate([0] + list(_BACKOFF_DELAYS)):
         if delay:
@@ -116,11 +140,16 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             time.sleep(delay)
 
         try:
-            resp = session.get(url, params=params, timeout=timeout)
+            resp = session.get(url, params=params, timeout=timeout, headers=extra_headers)
         except requests.RequestException as exc:
             last_exc = exc
             logger.warning("Network error on %s: %s", url, exc)
             continue
+
+        # ETag 304: resource unchanged
+        if resp.status_code == 304:
+            logger.debug("ETag 304 for %s: not modified", url)
+            return None
 
         # Rate-limit responses (429/403 with quota exhausted): sleep until reset
         # and retry immediately without consuming a backoff attempt slot.
@@ -129,7 +158,7 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             if remaining == 0 or resp.status_code == 429:
                 _wait_for_reset(resp, label=url)
                 try:
-                    resp = session.get(url, params=params, timeout=timeout)
+                    resp = session.get(url, params=params, timeout=timeout, headers=extra_headers)
                 except requests.RequestException as exc:
                     last_exc = exc
                     break
@@ -344,12 +373,48 @@ def load_existing_urls(output_path: str) -> set[str]:
     return urls
 
 
+def load_existing_records(path: str) -> dict[str, dict]:
+    """Load existing raw JSONL → dict keyed by skill_md_url (preferred) or repo_url.
+
+    Used by crawlers in --update mode to check staleness.
+    Returns empty dict if file does not exist.
+
+    Args:
+        path: Path to an existing JSONL file.
+
+    Returns:
+        Dict mapping skill_md_url (if non-empty in raw_metadata) or repo_url → full record.
+        When a repo has multiple SKILL.md files, each file gets its own entry (keyed by
+        skill_md_url). Repos without skill_md_url use repo_url as key.
+    """
+    import pathlib
+    p = pathlib.Path(path)
+    if not p.exists():
+        return {}
+
+    records: dict[str, dict] = {}
+    with p.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                skill_md_url = record.get("raw_metadata", {}).get("skill_md_url", "")
+                key = skill_md_url if skill_md_url else record.get("repo_url", "")
+                if key:
+                    records[key] = record
+            except (json.JSONDecodeError, AttributeError):
+                continue
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Trees API helper — find SKILL.md paths
 # ---------------------------------------------------------------------------
 
-def find_skill_md_paths(session, repo_full_name: str) -> list[str]:
-    """Return all paths to SKILL.md files in a repo.
+def find_skill_md_paths(session, repo_full_name: str) -> dict[str, str]:
+    """Return all paths to SKILL.md files in a repo mapped to their blob SHAs.
 
     Primary: recursive Trees API (one request, fast).
     Fallback: Code Search API scoped to the repo — used when the tree is
@@ -361,24 +426,25 @@ def find_skill_md_paths(session, repo_full_name: str) -> list[str]:
         repo_full_name: "{owner}/{repo}" string.
 
     Returns:
-        List of paths (e.g. ["SKILL.md", "skills/context/SKILL.md"]).
-        Empty list if the repo is not found or has no SKILL.md files.
+        Dict mapping path → blob SHA (e.g. {"SKILL.md": "abc123", "skills/context/SKILL.md": "def456"}).
+        Empty dict if the repo is not found or has no SKILL.md files.
+        Blob SHAs may be empty strings for paths discovered via code search fallback.
     """
     url = f"{GITHUB_API}/repos/{repo_full_name}/git/trees/HEAD"
     try:
         data = github_get(session, url, params={"recursive": "1"})
     except RuntimeError as exc:
         logger.debug("Could not fetch tree for %s: %s", repo_full_name, exc)
-        return []
+        return {}
 
     if not data or "tree" not in data:
-        return []
+        return {}
 
-    paths = [
-        item["path"]
+    paths = {
+        item["path"]: item.get("sha", "")
         for item in data["tree"]
         if item.get("type") == "blob" and item.get("path", "").endswith("SKILL.md")
-    ]
+    }
 
     if data.get("truncated"):
         logger.debug(
@@ -390,17 +456,18 @@ def find_skill_md_paths(session, repo_full_name: str) -> list[str]:
     return paths
 
 
-def _find_skill_md_via_search(session, repo_full_name: str) -> list[str]:
+def _find_skill_md_via_search(session, repo_full_name: str) -> dict[str, str]:
     """Find SKILL.md paths via Code Search API, scoped to one repo.
 
     Used as a fallback when the Trees API returns a truncated result.
     Code Search paginates properly and is not subject to the 100k-node cap.
     Capped at GitHub's 1000-result search limit per query.
+
+    Returns a dict mapping path → "" (blob SHAs not available from code search).
     """
     import time as _time
 
-    paths: list[str] = []
-    seen: set[str] = set()
+    paths: dict[str, str] = {}
     page = 1
 
     while True:
@@ -418,9 +485,8 @@ def _find_skill_md_via_search(session, repo_full_name: str) -> list[str]:
         items = data.get("items", [])
         for item in items:
             p = item.get("path", "")
-            if p and p not in seen:
-                seen.add(p)
-                paths.append(p)
+            if p and p not in paths:
+                paths[p] = ""  # no blob SHA from code search API
 
         total = data.get("total_count", 0)
         if not items or page * 100 >= min(total, 1000):
@@ -515,6 +581,9 @@ def fetch_repo_metadata(session, repo_full_name: str) -> dict:
         logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
         return {}
 
+    if data is None:
+        return {}
+
     return {
         "stargazers_count": data.get("stargazers_count", 0),
         "pushed_at": data.get("pushed_at", ""),
@@ -524,9 +593,154 @@ def fetch_repo_metadata(session, repo_full_name: str) -> dict:
     }
 
 
+def fetch_repo_metadata_with_etag(
+    session,
+    repo_full_name: str,
+    etag: str = None,
+) -> tuple[dict | None, str | None]:
+    """Fetch metadata for a single repo with ETag support.
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+        etag:           Optional ETag from a previous response.  When provided
+                        and the resource is unchanged, (None, new_etag) is
+                        returned.
+
+    Returns:
+        (metadata_dict, new_etag) where:
+          - metadata_dict is None on 304 Not Modified (resource unchanged).
+          - metadata_dict is {} on other errors.
+          - new_etag is the ETag from the response header, or None.
+    """
+    url = f"{GITHUB_API}/repos/{repo_full_name}"
+    headers: dict = {}
+    if etag:
+        headers["If-None-Match"] = etag
+
+    try:
+        resp = session.get(url, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
+        return {}, None
+
+    new_etag = resp.headers.get("ETag")
+
+    if resp.status_code == 304:
+        logger.debug("ETag 304 for %s: metadata unchanged", repo_full_name)
+        return None, new_etag
+
+    if resp.status_code != 200:
+        logger.warning("HTTP %s fetching metadata for %s", resp.status_code, repo_full_name)
+        return {}, None
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}, None
+
+    return {
+        "stargazers_count": data.get("stargazers_count", 0),
+        "pushed_at": data.get("pushed_at", ""),
+        "topics": data.get("topics", []),
+        "description": data.get("description", ""),
+        "default_branch": data.get("default_branch", "main"),
+    }, new_etag
+
+
+def fetch_commit_sha(session, repo_full_name: str) -> str | None:
+    """Fetch the HEAD commit SHA for a repo (one API call).
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+
+    Returns:
+        The SHA string or None on error.
+    """
+    try:
+        data = github_get(session, f"{GITHUB_API}/repos/{repo_full_name}/commits/HEAD")
+        if data is None:
+            return None
+        return data.get("sha")
+    except RuntimeError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Platform inference
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Crawl state persistence
+# ---------------------------------------------------------------------------
+
+def load_crawl_state(source: str, state_dir: str = "data/crawl_state") -> dict:
+    """Load per-source crawl state from data/crawl_state/{source}.json.
+
+    Returns empty state dict if file doesn't exist (first run).
+
+    Args:
+        source:    Crawler source name (e.g. "skillsmp", "clawhub").
+        state_dir: Directory to read state files from.
+
+    Returns:
+        State dict with at minimum keys: source, repos, awesome_lists.
+    """
+    import pathlib
+    path = pathlib.Path(state_dir) / f"{source}.json"
+    if not path.exists():
+        return {"source": source, "repos": {}, "awesome_lists": {}}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"source": source, "repos": {}, "awesome_lists": {}}
+
+
+def save_crawl_state(state: dict, source: str, state_dir: str = "data/crawl_state") -> None:
+    """Atomically save crawl state to data/crawl_state/{source}.json.
+
+    Uses a write-then-rename pattern to avoid partial writes.
+
+    Args:
+        state:     State dict to persist.
+        source:    Crawler source name (used to derive filename).
+        state_dir: Directory to write state files to.
+    """
+    import pathlib
+    import os
+    p = pathlib.Path(state_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    dest = p / f"{source}.json"
+    tmp = dest.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, dest)
+
+
+def make_tombstone(repo_url: str, skill_md_url: str, source: str) -> dict:
+    """Create a tombstone record for a deleted skill.
+
+    Tombstone records are written to the raw JSONL output when a SKILL.md
+    path that was present in a previous crawl run is no longer found in the
+    current tree.  The normalize pipeline skips tombstone records, preventing
+    deleted skills from persisting in the index.
+
+    Args:
+        repo_url:     Canonical GitHub repo URL.
+        skill_md_url: URL to the deleted SKILL.md blob.
+        source:       Crawler source name.
+
+    Returns:
+        Tombstone record dict.
+    """
+    return {
+        "repo_url": repo_url,
+        "skill_md_url": skill_md_url,
+        "source": source,
+        "tombstone": True,
+        "deleted_at": _utc_now_iso(),
+    }
+
 
 def infer_platforms(frontmatter: dict, source: str) -> list[str]:
     """Infer target platforms from frontmatter and source.

@@ -353,3 +353,47 @@ class TestNormalize:
             assert "is_official" not in record, (
                 f"is_official should be stripped from output but found in: {record.get('name')}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tombstone filtering
+# ---------------------------------------------------------------------------
+
+class TestTombstoneFiltering:
+    """Test that tombstone records are skipped during normalization."""
+
+    def test_tombstone_records_are_skipped(self, tmp_path):
+        """Records with tombstone=True should be excluded from normalized output."""
+        raw = tmp_path / "raw.jsonl"
+        records = [
+            {
+                "repo_url": "https://github.com/user/real-skill",
+                "name": "real-skill",
+                "description": "A real agent skill with enough content",
+                "source": "skillsmp",
+                "raw_metadata": {
+                    "stars": 50,
+                    "pushed_at": "2026-01-01",
+                    "skill_md_url": "https://github.com/user/real-skill/blob/main/SKILL.md",
+                    "platforms": ["claude_code"],
+                },
+            },
+            {
+                "repo_url": "https://github.com/user/deleted-skill",
+                "skill_md_url": "https://github.com/user/deleted-skill/blob/main/SKILL.md",
+                "source": "skillsmp",
+                "tombstone": True,
+                "deleted_at": "2026-03-01T00:00:00Z",
+            },
+        ]
+        with raw.open("w") as f:
+            for rec in records:
+                f.write(json.dumps(rec) + "\n")
+
+        output = str(tmp_path / "out.jsonl")
+        normalize([str(raw)], output, min_skills=0)
+
+        out_records = [json.loads(l) for l in open(output) if l.strip()]
+        repo_urls = [r["repo_url"] for r in out_records]
+        assert "https://github.com/user/deleted-skill" not in repo_urls
+        assert "https://github.com/user/real-skill" in repo_urls

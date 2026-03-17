@@ -430,7 +430,7 @@ def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
             if name_norm == dir_norm or dir_norm in name_norm or name_norm in dir_norm:
                 return path
 
-    return skill_md_paths[0]
+    return next(iter(skill_md_paths))
 
 
 def _iter_jsonl(path: str):
@@ -574,7 +574,7 @@ def scrape_skill_listing(
                         skill_md_paths = find_skill_md_paths(github_session, full_name)
                         repo_paths_cache[full_name] = (meta, default_branch, skill_md_paths)
                         # Only write to filter cache when we're confident no SKILL.md exists.
-                        # find_skill_md_paths returns [] for both "none found" and transient
+                        # find_skill_md_paths returns {} for both "none found" and transient
                         # errors; we accept the risk of a false negative here rather than
                         # permanently blocking a repo on a rate-limit hiccup.
                         if not skill_md_paths and filter_cache_path:

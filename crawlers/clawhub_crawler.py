@@ -451,12 +451,12 @@ def run(
             else:
                 meta, skill_md_paths = _repo_cache[full_name]
                 if skill_md_paths is None:
-                    skill_md_paths = []
+                    skill_md_paths = {}
 
             if not skill_md_paths:
                 continue
             elif len(skill_md_paths) == 1:
-                skill_path = skill_md_paths[0]
+                skill_path = next(iter(skill_md_paths))
             else:
                 log.debug("Multiple SKILL.md paths but no subtree hint for %s; skipping", repo_url)
                 continue
