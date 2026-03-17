@@ -8,6 +8,12 @@ Ollama (Qwen3-Embedding-0.6B), and writes:
 
 Documents are embedded as-is (no query prefix). The query instruction prefix
 is applied only at search time in scripts/search.py.
+
+Incremental mode: pass existing embeddings.npy + ordered.jsonl as a cache.
+Records whose ``id`` and ``embedding_text`` both match a cached entry are
+reused directly — only new or changed skills hit Ollama.  Cache is keyed by
+``id`` (stable sha256) and invalidated when ``embedding_text`` changes, so
+description/category edits automatically trigger a re-embed.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_URL: str = "http://localhost:11434"
 MODEL: str = "qwen3-embedding:0.6b"
-BATCH_SIZE: int = 32
+BATCH_SIZE: int = 128
 DIM: int = 1024
 CHECKPOINT_EVERY: int = 100  # save checkpoint every N batches
 
@@ -143,12 +149,49 @@ def embed_all(
     return np.vstack(all_vecs) if all_vecs else np.empty((0, DIM), dtype=np.float32)
 
 
+def load_embedding_cache(
+    embeddings_path: str,
+    ordered_path: str,
+) -> dict[str, tuple[np.ndarray, str]]:
+    """Load existing embeddings into a per-skill cache.
+
+    Reads *embeddings_path* (numpy array) and *ordered_path* (JSONL) and
+    returns a mapping ``{id: (vector, embedding_text)}``.
+
+    Cache hits require both the ``id`` and the ``embedding_text`` to match —
+    if ``embedding_text`` has changed the entry is treated as a miss and the
+    skill will be re-embedded.
+
+    Returns an empty dict if either file is missing or unreadable.
+    """
+    cache: dict[str, tuple[np.ndarray, str]] = {}
+    try:
+        vecs = np.load(embeddings_path)
+        with open(ordered_path, encoding="utf-8") as fh:
+            for i, line in enumerate(fh):
+                line = line.strip()
+                if not line or i >= len(vecs):
+                    continue
+                rec = json.loads(line)
+                rid = rec.get("id", "")
+                if rid:
+                    cache[rid] = (vecs[i], rec.get("embedding_text", ""))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning("Could not load embedding cache from %s: %s", embeddings_path, exc)
+    logger.info("Loaded %d cached embeddings", len(cache))
+    return cache
+
+
 def run_embed(
     input_path: str,
     output_embeddings: str,
     output_ordered: str,
     ollama_url: str = OLLAMA_URL,
     batch_size: int = BATCH_SIZE,
+    cache_embeddings: str | None = None,
+    cache_ordered: str | None = None,
 ) -> int:
     """Read input JSONL, embed all records, and write outputs.
 
@@ -156,15 +199,22 @@ def run_embed(
       - *output_embeddings*: numpy array, shape (N, 1024), float32, via np.save.
       - *output_ordered*: JSONL file with records in exactly the same row order.
 
+    Incremental mode: provide *cache_embeddings* + *cache_ordered* (the
+    previous run's outputs).  Any skill whose ``id`` and ``embedding_text``
+    match a cached entry is reused directly — only new or changed skills are
+    sent to Ollama.
+
     Args:
         input_path:         Path to ``unified_skills.jsonl``.
         output_embeddings:  Destination path for ``embeddings.npy``.
         output_ordered:     Destination path for row-aligned ``ordered.jsonl``.
         ollama_url:         Ollama base URL.
         batch_size:         Texts per Ollama request.
+        cache_embeddings:   Optional path to a previous ``embeddings.npy``.
+        cache_ordered:      Optional path to the matching previous ordered JSONL.
 
     Returns:
-        Total number of records embedded.
+        Total number of records in the output (cached + newly embedded).
 
     Raises:
         FileNotFoundError: if *input_path* does not exist.
@@ -181,10 +231,47 @@ def run_embed(
             if line:
                 records.append(json.loads(line))
 
-    embeddings = embed_all(records, ollama_url=ollama_url, batch_size=batch_size)
+    # Load cache if both paths were provided.
+    cache: dict[str, tuple[np.ndarray, str]] = {}
+    if cache_embeddings and cache_ordered:
+        cache = load_embedding_cache(cache_embeddings, cache_ordered)
+
+    # Partition records: cache hits vs. records that need embedding.
+    # A cache hit requires the same id AND the same embedding_text.
+    to_embed_records: list[dict] = []
+    for rec in records:
+        rid = rec.get("id", "")
+        cached = cache.get(rid)
+        if rid and cached is not None and cached[1] == rec.get("embedding_text", ""):
+            pass  # cache hit — reuse existing vector
+        else:
+            to_embed_records.append(rec)
+
+    n_cached = len(records) - len(to_embed_records)
+    logger.info(
+        "Embedding: %d cached, %d new/changed (total %d)",
+        n_cached, len(to_embed_records), len(records),
+    )
+
+    # Embed only the records that need it.
+    new_vecs: np.ndarray | None = None
+    if to_embed_records:
+        new_vecs = embed_all(to_embed_records, ollama_url=ollama_url, batch_size=batch_size)
+
+    # Assemble final embeddings array in input order.
+    all_vecs = np.empty((len(records), DIM), dtype=np.float32)
+    new_idx = 0
+    for i, rec in enumerate(records):
+        rid = rec.get("id", "")
+        cached = cache.get(rid)
+        if rid and cached is not None and cached[1] == rec.get("embedding_text", ""):
+            all_vecs[i] = cached[0]
+        else:
+            all_vecs[i] = new_vecs[new_idx]
+            new_idx += 1
 
     # Save embeddings array.
-    np.save(output_embeddings, embeddings)
+    np.save(output_embeddings, all_vecs)
 
     # Save records in the same order — row N in embeddings == line N here.
     with open(output_ordered, "w", encoding="utf-8") as f:
@@ -209,6 +296,18 @@ if __name__ == "__main__":
     parser.add_argument("--output-ordered", default="data/unified_skills_ordered.jsonl")
     parser.add_argument("--ollama-url", default=OLLAMA_URL)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument(
+        "--cache-embeddings",
+        default=None,
+        metavar="PATH",
+        help="Existing embeddings.npy to reuse vectors from (incremental mode).",
+    )
+    parser.add_argument(
+        "--cache-ordered",
+        default=None,
+        metavar="PATH",
+        help="Existing ordered JSONL matching --cache-embeddings (incremental mode).",
+    )
     args = parser.parse_args()
 
     if not check_ollama_available(args.ollama_url):
@@ -223,5 +322,7 @@ if __name__ == "__main__":
         output_ordered=args.output_ordered,
         ollama_url=args.ollama_url,
         batch_size=args.batch_size,
+        cache_embeddings=args.cache_embeddings,
+        cache_ordered=args.cache_ordered,
     )
     print(f"Done. Embedded {n} records.")
