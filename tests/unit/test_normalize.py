@@ -10,9 +10,11 @@ Tests cover:
   - passes_quality_filter: quality gate logic
   - normalize: end-to-end pipeline function
   - QualityGateError: raised when min_skills threshold not met
+  - normalize quality-stats logging
 """
 import hashlib
 import json
+import logging
 import os
 
 import pytest
@@ -418,3 +420,114 @@ class TestTombstoneFiltering:
         repo_urls = [r["repo_url"] for r in out_records]
         assert "https://github.com/user/deleted-skill" not in repo_urls
         assert "https://github.com/user/real-skill" in repo_urls
+
+
+# ---------------------------------------------------------------------------
+# Quality stats logging
+# ---------------------------------------------------------------------------
+
+def _make_raw_record(repo_url, description="Good skill.", stars=50, source="skillsmp"):
+    return {
+        "repo_url": repo_url,
+        "name": repo_url.split("/")[-1],
+        "description": description,
+        "source": source,
+        "raw_metadata": {"stars": stars},
+    }
+
+
+class TestNormalizeQualityStats:
+    """Verify that normalize() logs quality stats to the INFO logger."""
+
+    def _run_normalize(self, tmp_path, records, min_stars=10):
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+        output = str(tmp_path / "out.jsonl")
+        with self._capture_logs("pipeline.normalize") as log_records:
+            normalize([str(raw)], output, min_stars=min_stars, min_skills=0)
+        messages = [r.getMessage() for r in log_records]
+        return messages
+
+    @staticmethod
+    def _capture_logs(logger_name: str):
+        """Context manager that collects log records from a named logger."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            records: list[logging.LogRecord] = []
+
+            class _Sink(logging.Handler):
+                def emit(self, record):
+                    records.append(record)
+
+            handler = _Sink(level=logging.DEBUG)
+            lgr = logging.getLogger(logger_name)
+            old_level = lgr.level
+            lgr.setLevel(logging.DEBUG)
+            lgr.addHandler(handler)
+            try:
+                yield records
+            finally:
+                lgr.removeHandler(handler)
+                lgr.setLevel(old_level)
+
+        return _ctx()
+
+    def test_logs_raw_record_count(self, tmp_path):
+        records = [
+            _make_raw_record("https://github.com/u/a"),
+            _make_raw_record("https://github.com/u/b"),
+        ]
+        msgs = self._run_normalize(tmp_path, records)
+        raw_line = next(m for m in msgs if "Raw records loaded" in m)
+        assert "2" in raw_line
+
+    def test_logs_dedup_line(self, tmp_path):
+        # Two records with the same repo_url → 1 unique group
+        records = [
+            _make_raw_record("https://github.com/u/shared"),
+            _make_raw_record("https://github.com/u/shared"),
+        ]
+        msgs = self._run_normalize(tmp_path, records)
+        dedup_line = next(m for m in msgs if "Dedup:" in m)
+        assert "2 raw" in dedup_line
+        assert "1 unique" in dedup_line
+
+    def test_logs_dropped_no_description(self, tmp_path):
+        records = [
+            _make_raw_record("https://github.com/u/good"),
+            _make_raw_record("https://github.com/u/nodesc", description=""),
+        ]
+        msgs = self._run_normalize(tmp_path, records)
+        dropped_line = next(m for m in msgs if "no description" in m)
+        assert "1" in dropped_line
+
+    def test_logs_dropped_zero_stars(self, tmp_path):
+        records = [
+            _make_raw_record("https://github.com/u/good"),
+            _make_raw_record("https://github.com/u/zerostars", stars=0),
+        ]
+        msgs = self._run_normalize(tmp_path, records)
+        zero_line = next(m for m in msgs if "0-star" in m)
+        assert "1" in zero_line
+
+    def test_logs_dropped_low_stars(self, tmp_path):
+        records = [
+            _make_raw_record("https://github.com/u/good"),
+            _make_raw_record("https://github.com/u/lowstars", stars=5),
+        ]
+        msgs = self._run_normalize(tmp_path, records, min_stars=10)
+        low_line = next(m for m in msgs if "1-9" in m)
+        assert "1" in low_line
+
+    def test_logs_passed_count(self, tmp_path):
+        records = [
+            _make_raw_record("https://github.com/u/a"),
+            _make_raw_record("https://github.com/u/b"),
+        ]
+        msgs = self._run_normalize(tmp_path, records)
+        passed_line = next(m for m in msgs if "Passed quality filter" in m)
+        assert "2" in passed_line

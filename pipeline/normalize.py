@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -367,6 +368,7 @@ def normalize(
     # ------------------------------------------------------------------ load
     # key: canonical URL  →  value: list of raw records sharing that URL
     groups: dict[str, list[dict]] = {}
+    total_raw = 0
 
     for path in raw_paths:
         p = Path(path)
@@ -387,6 +389,7 @@ def normalize(
                 if record.get("tombstone"):
                     logger.debug("Skipping tombstone record: %s", record.get("skill_md_url", record.get("repo_url", "")))
                     continue
+                total_raw += 1
                 repo_url = record.get("repo_url", "")
                 if not repo_url:
                     logger.warning("Skipping record at %s:%d: missing repo_url", path, lineno)
@@ -401,12 +404,27 @@ def normalize(
 
     # ----------------------------------------------------------------- merge
     output_records: list[dict] = []
+    dropped_no_desc: dict[str, int] = defaultdict(int)
+    dropped_low_stars_zero: dict[str, int] = defaultdict(int)
+    dropped_low_stars_low: dict[str, int] = defaultdict(int)
 
     for group_key, recs in groups.items():
         merged = merge_records(recs, dedup_key=group_key)
 
-        # Quality gate: drop records that don't meet the bar
-        if not passes_quality_filter(merged, min_stars=min_stars):
+        # Quality gate: drop records that don't meet the bar, collecting stats
+        _desc = merged.get("description", "")
+        _stars = (merged.get("quality", {}) or {}).get("stars", 0) or 0
+        _srcs = merged.get("source", []) or ["unknown"]
+        if not _desc:
+            for _s in _srcs:
+                dropped_no_desc[_s] += 1
+            continue
+        if _stars < min_stars:
+            for _s in _srcs:
+                if _stars == 0:
+                    dropped_low_stars_zero[_s] += 1
+                else:
+                    dropped_low_stars_low[_s] += 1
             continue
 
         # Build install commands, then discard is_official (pipeline-only flag)
@@ -421,6 +439,30 @@ def normalize(
             continue
 
         output_records.append(merged)
+
+    # --------------------------------------------------------------- quality stats
+    _total_no_desc = sum(dropped_no_desc.values())
+    _total_ls_zero = sum(dropped_low_stars_zero.values())
+    _total_ls_low = sum(dropped_low_stars_low.values())
+    logger.info("Normalize quality stats:")
+    logger.info("  Raw records loaded: %d (across %d files)", total_raw, len(raw_paths))
+    logger.info(
+        "  Dedup: %d raw -> %d unique groups (%d dupes removed)",
+        total_raw, len(groups), max(0, total_raw - len(groups)),
+    )
+    logger.info(
+        "  Dropped (no description): %d -- %s",
+        _total_no_desc, dict(dropped_no_desc),
+    )
+    logger.info(
+        "  Dropped (low stars, 0-star): %d -- %s",
+        _total_ls_zero, dict(dropped_low_stars_zero),
+    )
+    logger.info(
+        "  Dropped (low stars, 1-%d): %d -- %s",
+        min_stars - 1, _total_ls_low, dict(dropped_low_stars_low),
+    )
+    logger.info("  Passed quality filter: %d", len(output_records))
 
     # --------------------------------------------------------------- quality gate
     count = len(output_records)
