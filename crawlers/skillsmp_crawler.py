@@ -208,6 +208,7 @@ def _fetch_skill_md(
     repo_full_name: str,
     path: str = "SKILL.md",
     default_branch: str = "main",
+    _depth: int = 0,
 ) -> str | None:
     """Fetch raw SKILL.md content using the path reported by code search.
 
@@ -215,7 +216,14 @@ def _fetch_skill_md(
     the file is at the repo root.  Falls back to main/master when the default
     branch 404s.  Uses session.get() directly (not github_get) to avoid
     wasting retry quota on expected 404s.
+
+    Resolves symlinks (GitHub returns ``"type": "symlink"`` with a ``target``
+    field instead of base64 ``content``) up to one level deep.
     """
+    import posixpath
+    if _depth > 1:
+        return None
+
     branches_to_try = [default_branch]
     for fallback in ("main", "master"):
         if fallback not in branches_to_try:
@@ -229,13 +237,26 @@ def _fetch_skill_md(
             logger.debug("Network error fetching %s@%s: %s", path, branch, exc)
             continue
 
-        if resp.status_code == 200:
-            try:
-                encoded = resp.json().get("content", "")
-                return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-            except Exception:
-                continue
-        # 404 means file not at this path/branch — try next branch silently
+        if resp.status_code != 200:
+            # 404 means file not at this path/branch — try next branch silently
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            continue
+
+        if data.get("type") == "symlink":
+            target = data.get("target", "")
+            if not target:
+                return None
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+            return _fetch_skill_md(session, repo_full_name, resolved, branch, _depth + 1)
+
+        try:
+            encoded = data.get("content", "")
+            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+        except Exception:
+            continue
 
     return None
 
@@ -245,16 +266,22 @@ def _parse_frontmatter(content: str) -> dict:
 
     Returns a dict with 'name', 'description', 'triggers' keys (all optional).
     Returns an empty dict if no frontmatter is present or parsing fails.
+    Tolerates files that begin with HTML comments before the opening ``---``.
     """
-    if not content or not content.startswith("---"):
+    if not content:
+        return {}
+    # Strip leading HTML comments and blank lines so files that start with
+    # <!-- ... --> before the YAML block are handled correctly.
+    stripped = re.sub(r"^(\s*<!--.*?-->\s*)+", "", content, flags=re.DOTALL)
+    if not stripped.startswith("---"):
         return {}
 
     # Find the closing ---
-    end_match = re.search(r"\n---\s*\n", content[3:])
+    end_match = re.search(r"\n---\s*\n", stripped[3:])
     if not end_match:
         return {}
 
-    yaml_text = content[3: end_match.start() + 3]
+    yaml_text = stripped[3: end_match.start() + 3]
     try:
         fm = yaml.safe_load(yaml_text)
         if not isinstance(fm, dict):

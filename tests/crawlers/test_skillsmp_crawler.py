@@ -291,3 +291,96 @@ class TestSkillsmpCrawlerNetwork:
             for line in Path(out).read_text().strip().splitlines()
         ]
         assert len(urls) == len(set(urls)), "Duplicate repo_urls found in output"
+
+
+# ---------------------------------------------------------------------------
+# TestParseFrontmatterSkillsmp
+# ---------------------------------------------------------------------------
+
+class TestParseFrontmatterSkillsmp:
+    """Unit tests for skillsmp_crawler._parse_frontmatter."""
+
+    def test_plain_frontmatter(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        result = _parse_frontmatter("---\nname: foo\n---\n")
+        assert result == {"name": "foo"}
+
+    def test_html_comment_before_frontmatter(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        result = _parse_frontmatter("<!-- copyright -->\n---\nname: bar\n---\n")
+        assert result == {"name": "bar"}
+
+    def test_multiple_html_comments(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        content = "<!-- first comment -->\n<!-- second comment -->\n---\nname: baz\n---\n"
+        result = _parse_frontmatter(content)
+        assert result == {"name": "baz"}
+
+    def test_empty_string(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        assert _parse_frontmatter("") == {}
+
+    def test_no_frontmatter(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        assert _parse_frontmatter("# Just a heading\n\nSome content.") == {}
+
+    def test_html_comment_only(self):
+        from crawlers.skillsmp_crawler import _parse_frontmatter
+        assert _parse_frontmatter("<!-- comment -->") == {}
+
+
+# ---------------------------------------------------------------------------
+# TestFetchSkillMdSkillsmp
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMdSkillsmp:
+    """Unit tests for skillsmp_crawler._fetch_skill_md with a mocked session."""
+
+    def _make_response(self, status_code=200, json_data=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data or {}
+        return mock_resp
+
+    def test_symlink_resolved(self):
+        import base64
+        from crawlers.skillsmp_crawler import _fetch_skill_md
+
+        encoded = base64.b64encode(b"content").decode() + "\n"
+        session = MagicMock()
+        symlink_resp = self._make_response(200, {"type": "symlink", "target": "other/SKILL.md"})
+        file_resp = self._make_response(200, {"type": "file", "content": encoded})
+        # skillsmp tries multiple branches; provide enough responses
+        session.get.side_effect = [symlink_resp, file_resp]
+
+        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
+        assert result == "content"
+
+    def test_symlink_depth_limit(self):
+        from crawlers.skillsmp_crawler import _fetch_skill_md
+
+        session = MagicMock()
+        session.get.return_value = self._make_response(200, {"type": "symlink", "target": "other/SKILL.md"})
+
+        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=1)
+        assert result is None
+
+    def test_non_200_returns_none(self):
+        from crawlers.skillsmp_crawler import _fetch_skill_md
+
+        session = MagicMock()
+        session.get.return_value = self._make_response(404, {})
+
+        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
+        assert result is None
+
+    def test_normal_b64_decoded(self):
+        import base64
+        from crawlers.skillsmp_crawler import _fetch_skill_md
+
+        encoded = base64.b64encode(b"hello world").decode() + "\n"
+        session = MagicMock()
+        session.get.return_value = self._make_response(200, {"type": "file", "content": encoded})
+
+        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
+        assert result == "hello world"
