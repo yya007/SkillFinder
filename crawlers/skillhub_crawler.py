@@ -401,7 +401,7 @@ def build_raw_record(skill: dict) -> dict | None:
     }
 
 
-def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
+def _match_skill_path(skill_name: str, skill_md_paths: dict[str, str]) -> str | None:
     """Pick the best SKILL.md path by matching the skill name to its parent directory.
 
     Normalises both the skill name and each path's parent directory to
@@ -410,7 +410,7 @@ def _match_skill_path(skill_name: str, skill_md_paths: list[str]) -> str | None:
 
     Args:
         skill_name:      Display name of the skill from SkillHub.
-        skill_md_paths:  List of SKILL.md paths from Trees API.
+        skill_md_paths:  Dict of SKILL.md paths → blob SHAs from Trees API.
 
     Returns:
         Best-matching path, or None if skill_md_paths is empty.
@@ -502,7 +502,7 @@ def scrape_skill_listing(
     seen_urls: set[str] = set()  # dedup across categories by skillhub_url
     # Cache repo_full_name → (meta, default_branch, skill_md_paths) to avoid
     # repeated GitHub API calls for the same monorepo.
-    repo_paths_cache: dict[str, tuple[dict, str, list[str]]] = {}
+    repo_paths_cache: dict[str, tuple[dict, str, dict[str, str]]] = {}
 
     # Discover all categories; "" = uncategorised (catches skills not in any category)
     categories = discover_categories(session)
@@ -632,6 +632,7 @@ def run(
     resume: bool = False,
     token: str = None,
     filter_cache_path: str = None,
+    mode: str = "full",
 ) -> int:
     """Run the SkillHub crawler.
 
@@ -641,10 +642,15 @@ def run(
         resume:            If True, skip repos already present in output_path.
         token:             GitHub personal access token for fetching repo metadata.
         filter_cache_path: Path to shared filter cache JSONL file.
+        mode:              Crawl mode: full, incremental, metadata, or discover.
+                           incremental behaves like resume=True.
 
     Returns:
         Number of new records written.
     """
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
+        resume = True
     session = make_session()
     session.headers.update({"User-Agent": _USER_AGENT})
 
@@ -732,9 +738,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="GitHub personal access token for fetching repo metadata (or set GITHUB_TOKEN env var)",
     )
     p.add_argument(
+        "--mode",
+        choices=["full", "incremental", "metadata", "discover"],
+        default="full",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
-        help="Skip repos already present in the output file",
+        help="[Deprecated] Alias for --mode incremental",
     )
     p.add_argument(
         "--filter-cache",
@@ -764,6 +776,14 @@ def main(argv: list[str] | None = None) -> int:
     import os as _os
     token = getattr(args, "token", None) or _os.environ.get("GITHUB_TOKEN")
     filter_cache_path = getattr(args, "filter_cache", None) or None
+
+    # Deprecated flag aliases
+    if args.resume:
+        import warnings
+        warnings.warn("--resume is deprecated, use --mode incremental", DeprecationWarning)
+        if args.mode == "full":
+            args.mode = "incremental"
+
     try:
         count = run(
             output_path=args.output,
@@ -771,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             token=token,
             filter_cache_path=filter_cache_path,
+            mode=args.mode,
         )
         print(f"Wrote {count} total records to {args.output}", file=sys.stderr)
         return 0

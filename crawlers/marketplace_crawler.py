@@ -362,6 +362,7 @@ def run(
     token: str = None,
     limit: int = None,
     resume: bool = False,
+    mode: str = "full",
 ) -> int:
     """Run the marketplace crawler end to end.
 
@@ -374,10 +375,15 @@ def run(
         token:       GitHub personal access token.
         limit:       Maximum number of records to write (None = unlimited).
         resume:      If True, skip repo_urls already present in output_path.
+        mode:        Crawl mode: full, incremental, metadata, or discover.
+                     incremental behaves like resume=True.
 
     Returns:
         Number of records written.
     """
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
+        resume = True
     session = make_session(token=token)
 
     # For marketplace, dedup by (parent_repo, path) — multiple skills in the same
@@ -485,9 +491,15 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Stop after writing N records (useful for testing)",
     )
     parser.add_argument(
+        "--mode",
+        choices=["full", "incremental", "metadata", "discover"],
+        default="full",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
-        help="Skip skills already present in the output file",
+        help="[Deprecated] Alias for --mode incremental",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -511,12 +523,20 @@ def main(argv=None) -> int:
             "No GitHub token provided. Unauthenticated requests are heavily rate-limited."
         )
 
+    # Deprecated flag aliases
+    if args.resume:
+        import warnings
+        warnings.warn("--resume is deprecated, use --mode incremental", DeprecationWarning)
+        if args.mode == "full":
+            args.mode = "incremental"
+
     try:
         count = run(
             output_path=args.output,
             token=token,
             limit=args.limit,
             resume=args.resume,
+            mode=args.mode,
         )
         print(f"Done: {count} records written to {args.output}")
         return 0

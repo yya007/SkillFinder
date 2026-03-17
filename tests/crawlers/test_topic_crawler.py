@@ -102,7 +102,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = SAMPLE_SKILL_MD
 
             out = str(tmp_path / "out.jsonl")
@@ -119,7 +119,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = SAMPLE_SKILL_MD
 
             out = str(tmp_path / "out.jsonl")
@@ -138,7 +138,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
 
             out = str(tmp_path / "out.jsonl")
@@ -156,7 +156,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = [f"user/skill-{i}" for i in range(10)]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
 
             out = str(tmp_path / "out.jsonl")
@@ -173,7 +173,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/no-skill-md", "user/has-skill-md"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.side_effect = [[], ["SKILL.md"]]
+            mock_paths.side_effect = [{}, {"SKILL.md": ""}]
             mock_skill_md.return_value = None
 
             out = str(tmp_path / "out.jsonl")
@@ -198,7 +198,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/already-covered", "user/new-skill"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
 
             out = str(tmp_path / "out.jsonl")
@@ -227,7 +227,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None
 
             count = run(str(out), resume=True)
@@ -243,7 +243,7 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/my-cool-skill"]
             mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = ["SKILL.md"]
+            mock_paths.return_value = {"SKILL.md": ""}
             mock_skill_md.return_value = None  # no frontmatter
 
             out = str(tmp_path / "out.jsonl")
