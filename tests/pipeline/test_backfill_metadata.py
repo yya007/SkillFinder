@@ -307,10 +307,8 @@ class TestBackfillDescriptions:
         self._write_jsonl(p, records)
 
         fake_response = {"type": "file", "content": encoded}
-        # The fallback uses `from crawlers.base import fetch_repo_metadata` inside the function,
-        # so we must patch the name on crawlers.base, not on pipeline.backfill_metadata.
         with patch("crawlers.base.github_get", return_value=fake_response), \
-             patch("crawlers.base.fetch_repo_metadata", return_value={"description": "Fallback desc"}):
+             patch("pipeline.backfill_metadata.fetch_repo_metadata", return_value={"description": "Fallback desc"}):
             session = MagicMock()
             total, updated = backfill_descriptions(str(p), session)
 
