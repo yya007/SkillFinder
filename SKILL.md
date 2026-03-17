@@ -23,7 +23,7 @@ metadata:
 
 # skill-finder
 
-Search <!-- stats:skill-count:start -->14,000+<!-- stats:skill-count:end --> curated agent skills by describing what you want to do.
+Search <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills by describing what you want to do.
 Results are ranked by semantic similarity and include install commands.
 
 ## Usage
