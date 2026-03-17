@@ -82,13 +82,22 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter from a SKILL.md string."""
-    if not content or not content.startswith("---"):
+    """Extract YAML frontmatter from a SKILL.md string.
+
+    Tolerates files that begin with HTML comments (e.g. copyright headers)
+    before the opening ``---``.
+    """
+    if not content:
         return {}
-    end_match = re.search(r"\n---\s*\n", content[3:])
+    # Strip leading HTML comments and blank lines so files that start with
+    # <!-- ... --> before the YAML block are handled correctly.
+    stripped = re.sub(r"^(\s*<!--.*?-->\s*)+", "", content, flags=re.DOTALL)
+    if not stripped.startswith("---"):
+        return {}
+    end_match = re.search(r"\n---\s*\n", stripped[3:])
     if not end_match:
         return {}
-    yaml_text = content[3: end_match.start() + 3]
+    yaml_text = stripped[3: end_match.start() + 3]
     try:
         fm = yaml.safe_load(yaml_text)
         if not isinstance(fm, dict):
@@ -103,21 +112,39 @@ def _fetch_skill_md(
     repo_full_name: str,
     path: str = "SKILL.md",
     default_branch: str = "main",
+    _depth: int = 0,
 ) -> str | None:
-    """Fetch raw SKILL.md content from a specific path in a GitHub repo."""
+    """Fetch raw SKILL.md content from a specific path in a GitHub repo.
+
+    Resolves symlinks (GitHub returns ``"type": "symlink"`` with a ``target``
+    field instead of base64 ``content``) up to one level deep.
+    """
+    if _depth > 1:
+        return None
+    import posixpath
     url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
     try:
         resp = session.get(url, params={"ref": default_branch}, timeout=30)
     except Exception as exc:
         log.debug("Network error fetching %s from %s: %s", path, repo_full_name, exc)
         return None
-    if resp.status_code == 200:
-        try:
-            encoded = resp.json().get("content", "")
-            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-        except Exception:
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if data.get("type") == "symlink":
+        target = data.get("target", "")
+        if not target:
             return None
-    return None
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        return _fetch_skill_md(session, repo_full_name, resolved, default_branch, _depth + 1)
+    try:
+        encoded = data.get("content", "")
+        return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+    except Exception:
+        return None
 
 
 def _extract_subtree_hint(url: str) -> str | None:
