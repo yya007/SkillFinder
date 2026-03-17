@@ -187,3 +187,179 @@ class TestBackfillFile:
 
         out = _read_jsonl(p)
         assert out[0]["raw_metadata"]["default_branch"] == "develop"
+
+
+# ---------------------------------------------------------------------------
+# TestBackfillFileZeroStars
+# ---------------------------------------------------------------------------
+
+class TestBackfillFileZeroStars:
+    """Tests for the not-stars condition that now backfills 0-star records."""
+
+    def test_backfills_zero_star_records(self, tmp_path):
+        """Record with stars=0 should be backfilled (0 is falsy, so not stars is True)."""
+        p = tmp_path / "skills.jsonl"
+        records = [
+            {"repo_url": "https://github.com/u/zerorepo", "raw_metadata": {"stars": 0}},
+        ]
+        _write_jsonl(p, records)
+
+        mock_meta = {"stargazers_count": 42, "pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main"}
+        with patch("pipeline.backfill_metadata.fetch_repo_metadata", return_value=mock_meta):
+            session = MagicMock()
+            total, updated = backfill_file(str(p), session)
+
+        assert total == 1
+        assert updated == 1
+        out = _read_jsonl(p)
+        assert out[0]["raw_metadata"]["stars"] == 42
+
+    def test_still_skips_nonzero_stars(self, tmp_path):
+        """Record with stars=5 should NOT be backfilled."""
+        p = tmp_path / "skills.jsonl"
+        records = [
+            {"repo_url": "https://github.com/u/r", "raw_metadata": {"stars": 5}},
+        ]
+        _write_jsonl(p, records)
+
+        with patch("pipeline.backfill_metadata.fetch_repo_metadata") as mock_fetch:
+            session = MagicMock()
+            total, updated = backfill_file(str(p), session)
+
+        mock_fetch.assert_not_called()
+        assert total == 1
+        assert updated == 0
+
+
+# ---------------------------------------------------------------------------
+# TestBackfillDescriptions
+# ---------------------------------------------------------------------------
+
+import base64
+
+from pipeline.backfill_metadata import backfill_descriptions
+
+
+class TestBackfillDescriptions:
+    """Tests for backfill_descriptions function."""
+
+    def _write_jsonl(self, path: Path, records: list[dict]) -> None:
+        with path.open("w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+    def _read_jsonl(self, path: Path) -> list[dict]:
+        with path.open() as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def _make_record(self, description="", stars=10, skill_md_url="https://github.com/user/repo/blob/main/SKILL.md"):
+        return {
+            "repo_url": "https://github.com/user/repo",
+            "description": description,
+            "name": "foo",
+            "raw_metadata": {
+                "skill_md_url": skill_md_url,
+                "stars": stars,
+            },
+        }
+
+    def _b64(self, content: str) -> str:
+        return base64.b64encode(content.encode()).decode()
+
+    def test_skips_when_all_have_descriptions(self, tmp_path):
+        """All records already have description -> returns (total, 0), no API call."""
+        p = tmp_path / "skills.jsonl"
+        records = [
+            self._make_record(description="A fine skill."),
+            self._make_record(description="Another skill."),
+        ]
+        self._write_jsonl(p, records)
+
+        with patch("crawlers.base.github_get") as mock_gh:
+            session = MagicMock()
+            total, updated = backfill_descriptions(str(p), session)
+
+        assert total == 2
+        assert updated == 0
+        mock_gh.assert_not_called()
+
+    def test_updates_description_from_skill_md(self, tmp_path):
+        """Record with no description and skill_md_url present -> fetches SKILL.md and updates."""
+        p = tmp_path / "skills.jsonl"
+        skill_md_content = "---\nname: foo\ndescription: Great skill.\n---\n"
+        encoded = self._b64(skill_md_content)
+        records = [self._make_record(description="")]
+        self._write_jsonl(p, records)
+
+        fake_response = {"type": "file", "content": encoded}
+        with patch("crawlers.base.github_get", return_value=fake_response):
+            session = MagicMock()
+            total, updated = backfill_descriptions(str(p), session)
+
+        assert total == 1
+        assert updated == 1
+        out = self._read_jsonl(p)
+        assert out[0]["description"] == "Great skill."
+
+    def test_falls_back_to_github_description(self, tmp_path):
+        """SKILL.md has no description in frontmatter -> fallback to GitHub repo description."""
+        p = tmp_path / "skills.jsonl"
+        # SKILL.md with frontmatter but no description field
+        skill_md_content = "---\nname: foo\n---\n"
+        encoded = self._b64(skill_md_content)
+        records = [self._make_record(description="")]
+        self._write_jsonl(p, records)
+
+        fake_response = {"type": "file", "content": encoded}
+        # The fallback uses `from crawlers.base import fetch_repo_metadata` inside the function,
+        # so we must patch the name on crawlers.base, not on pipeline.backfill_metadata.
+        with patch("crawlers.base.github_get", return_value=fake_response), \
+             patch("crawlers.base.fetch_repo_metadata", return_value={"description": "Fallback desc"}):
+            session = MagicMock()
+            total, updated = backfill_descriptions(str(p), session)
+
+        assert total == 1
+        assert updated == 1
+        out = self._read_jsonl(p)
+        assert out[0]["description"] == "Fallback desc"
+
+    def test_dry_run_does_not_write(self, tmp_path):
+        """dry_run=True: description would be updated but file stays unchanged."""
+        p = tmp_path / "skills.jsonl"
+        skill_md_content = "---\nname: foo\ndescription: Great skill.\n---\n"
+        encoded = self._b64(skill_md_content)
+        records = [self._make_record(description="")]
+        self._write_jsonl(p, records)
+        original_mtime = p.stat().st_mtime
+
+        fake_response = {"type": "file", "content": encoded}
+        with patch("crawlers.base.github_get", return_value=fake_response):
+            session = MagicMock()
+            total, updated = backfill_descriptions(str(p), session, dry_run=True)
+
+        assert updated == 1
+        # File should not be modified
+        assert p.stat().st_mtime == original_mtime
+        out = self._read_jsonl(p)
+        assert out[0]["description"] == ""
+
+    def test_skips_record_without_skill_md_url(self, tmp_path):
+        """Record with no skill_md_url and no description -> nothing updated, no API called."""
+        p = tmp_path / "skills.jsonl"
+        records = [
+            {
+                "repo_url": "https://github.com/user/repo",
+                "description": "",
+                "name": "foo",
+                "raw_metadata": {"stars": 5},  # No skill_md_url
+            }
+        ]
+        self._write_jsonl(p, records)
+
+        with patch("crawlers.base.github_get") as mock_gh:
+            session = MagicMock()
+            total, updated = backfill_descriptions(str(p), session)
+
+        assert total == 1
+        assert updated == 0
+        mock_gh.assert_not_called()
