@@ -2,7 +2,7 @@
 
 **Universal agent skill discovery — find the right skill in seconds.**
 
-SkillFinder searches <!-- stats:skill-count:start -->14,000+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
+SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
 
 **Indexes skills for:** Claude Code · OpenClaw · Codex
 
@@ -272,12 +272,12 @@ pytest tests/quality/ -v -m quality
 <!-- stats:coverage-table:start -->
 | Registry | Crawler | Skills in index |
 |----------|---------|----------------:|
-| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 368 |
-| ClawHub / OpenClaw | `clawhub_crawler.py` | 1,130 |
-| SkillHub | `skillhub_crawler.py` | 139 |
-| Anthropic official marketplace | `marketplace_crawler.py` | 12,698 |
+| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 386 |
+| ClawHub / OpenClaw | `clawhub_crawler.py` | 4,605 |
+| SkillHub | `skillhub_crawler.py` | 4,421 |
+| Anthropic official marketplace | `marketplace_crawler.py` | 28,185 |
 | GitHub topics | `topic_crawler.py` | 0 |
-| **Total (after dedup)** | | **14,306** |
+| **Total (after dedup)** | | **33,827** |
 <!-- stats:coverage-table:end -->
 
 ## Star Distribution
@@ -285,13 +285,13 @@ pytest tests/quality/ -v -m quality
 <!-- stats:index-distribution:start -->
 | Stars | Skills | Distribution |
 |-------|-------:|:-------------|
-| 10–49 | 772 | █░░░░░░░░░░░░░░░░░░░ 5% |
-| 50–99 | 285 | █░░░░░░░░░░░░░░░░░░░ 2% |
-| 100–499 | 9,353 | █████████████░░░░░░░ 65% |
-| 500–999 | 171 | █░░░░░░░░░░░░░░░░░░░ 1% |
-| 1k–5k | 1,832 | ███░░░░░░░░░░░░░░░░░ 13% |
-| 5k+ | 1,893 | ███░░░░░░░░░░░░░░░░░ 13% |
-| **Total** | **14,306** | |
+| 10–49 | 1,956 | █░░░░░░░░░░░░░░░░░░░ 6% |
+| 50–99 | 1,254 | █░░░░░░░░░░░░░░░░░░░ 4% |
+| 100–499 | 15,824 | █████████░░░░░░░░░░░ 47% |
+| 500–999 | 970 | █░░░░░░░░░░░░░░░░░░░ 3% |
+| 1k–5k | 8,715 | █████░░░░░░░░░░░░░░░ 26% |
+| 5k+ | 5,108 | ███░░░░░░░░░░░░░░░░░ 15% |
+| **Total** | **33,827** | |
 <!-- stats:index-distribution:end -->
 
 ---
