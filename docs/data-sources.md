@@ -21,8 +21,8 @@
 
 Uses GitHub Code Search API with query `filename:SKILL.md`. Paginates through results (max 1,000 per query — use additional filters like `language:Markdown` or date ranges to get past the 1K cap). For each repo:
 
-1. Fetch `SKILL.md` raw content
-2. Parse YAML frontmatter (`name`, `description`, `triggers`)
+1. Fetch `SKILL.md` raw content (via Contents API; resolves symlinks one level deep)
+2. Parse YAML frontmatter (`name`, `description`, `triggers`) — HTML comment headers before `---` are stripped automatically
 3. Fetch repo metadata: `stargazers_count`, `pushed_at`, `topics`
 4. Optionally parse `README.md` first paragraph for supplemental description
 
@@ -38,6 +38,7 @@ Two-phase crawl:
 2. **Org/topic discovery** — query GitHub repository search for `org:openclaw`, `topic:openclaw`, and `topic:openclaw-skill`. Repos already covered by the awesome list are skipped to avoid double-counting.
 
 Each record that comes from ClawHub includes `safety_scan` field from VirusTotal results.
+SKILL.md files that are symlinks (GitHub Contents API returns `"type": "symlink"`) are resolved one level deep. Files that begin with HTML comments (e.g. copyright headers) before the YAML `---` block are handled by stripping those comments before frontmatter parsing.
 
 Source tag: `"clawhub"`. Install command: `clawhub install <name>` (openclaw platform).
 
@@ -80,8 +81,19 @@ Known target repos:
 - Any public repo with a `marketplace.json` at root (discovered via GitHub Search)
 
 For each: clone or fetch at ref, parse `marketplace.json` (array of `{name, description, path}` entries), then read the `SKILL.md` at each path.
+Symlinked SKILL.md files and files beginning with HTML comment headers are handled the same way as in the other crawlers.
 
 Output: `data/raw/marketplace.jsonl`
+
+---
+
+## Backfill (`pipeline/backfill_metadata.py`)
+
+Two modes:
+
+- **Stars backfill (default):** For records where `raw_metadata.stars` is `None` or `0` (not fetched at crawl time, or repo was new when crawled), calls the GitHub API to retrieve `stargazers_count`, `pushed_at`, and `default_branch`. Deduplicates API calls per unique `repo_url`.
+
+- **Description backfill (`--descriptions`):** For records with an empty `description`, re-fetches the SKILL.md from GitHub and re-parses its frontmatter using the updated HTML-comment-aware parser. Resolves symlinks one level deep. Falls back to the GitHub repository description if the SKILL.md has no description. Useful after deploying the HTML comment / symlink fixes to recover descriptions that were previously lost.
 
 ---
 
@@ -130,6 +142,8 @@ A skill is **dropped** if:
 - No description (after all merge attempts)
 - `stars == 0` AND not in any curated registry AND no SkillHub rating
 
+`normalize.py` logs a quality-stats breakdown at `INFO` level after every run (lines contain keywords `Dedup:`, `Dropped`, `Passed quality filter`). Pipe stderr through `grep -E "Dedup|Dropped|Passed|quality"` to see a compact summary.
+
 ### `embedding_text` Construction
 
 ```python
@@ -177,6 +191,43 @@ Each record in `data/unified_skills.jsonl` and `data/{model}/metadata.jsonl`:
 ```
 
 The `metadata.jsonl` files inside `data/qwen/` and `data/minilm/` are identical to each other and must maintain the same row order as their corresponding FAISS index (row N in the index ↔ line N in `metadata.jsonl`).
+
+---
+
+## Pipeline Observability
+
+### `pipeline/crawl_report.py`
+
+Standalone quality-check script. Run after crawling to get a per-source breakdown of data quality:
+
+```
+python pipeline/crawl_report.py [--data-dir data/raw]
+```
+
+Reads all `*.jsonl` files under `--data-dir` and prints:
+
+| Column | Meaning |
+|--------|---------|
+| `Records` | Total non-tombstone records |
+| `No-Desc` / `%No-Desc` | Records with empty description |
+| `0-Stars` / `%0-Stars` | Records with `raw_metadata.stars == 0` |
+| `Median★` / `P95★` | Star distribution |
+
+Thresholds (informational only, always exits 0):
+- `⚠` on `%No-Desc` if > 5% for a source
+- `⚠` on `%0-Stars` if > 15% for a source
+- `[WARN]` summary lines at the end for any flagged source
+
+If any `[WARN]` lines appear and missing-desc > 10% or 0-stars > 20% in a source, run `pipeline/backfill_metadata.py --descriptions` to recover descriptions.
+
+### `pipeline/update_crawl.py` timing
+
+`update_crawl.py` logs per-crawler record counts and wall times:
+```
+Crawler clawhub finished OK: 10009 records in 42.3s (log: data/logs/clawhub.log)
+Phase 1 done in 48.7s
+All phases done in 183.2s (0 errors)
+```
 
 ---
 
