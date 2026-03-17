@@ -3,7 +3,7 @@ Unit tests for pipeline/build_index.py
 
 Tests cover:
   - l2_normalize: unit-length vectors, in-place operation
-  - build_index: IndexFlatIP for small sets, IVFFlat for large sets
+  - build_index: IndexScalarQuantizer (SQ8) for small sets, IVFScalarQuantizer for large sets
   - verify_alignment: count matching, AlignmentError on mismatch
   - sha256_file: correct hash computation
   - write_version_txt / read_version_txt: round-trip
@@ -85,11 +85,11 @@ class TestL2Normalize:
 # ---------------------------------------------------------------------------
 
 class TestBuildIndex:
-    def test_small_corpus_uses_flat_index(self):
+    def test_small_corpus_uses_scalar_quantizer(self):
         vecs = random_embeddings(100)
         l2_normalize(vecs)
         index = build_index(vecs)
-        assert isinstance(index, faiss.IndexFlatIP)
+        assert isinstance(index, faiss.IndexScalarQuantizer)
 
     def test_index_ntotal_equals_input_count(self):
         n = 50
@@ -127,19 +127,19 @@ class TestBuildIndex:
             build_index(np.zeros((10, DIM + 1), dtype=np.float32))
 
     def test_ivf_threshold_boundary(self):
-        """Below threshold → IndexFlatIP; at threshold → IndexIVFFlat."""
+        """Below threshold → IndexScalarQuantizer; at threshold → IndexIVFScalarQuantizer."""
         import pipeline.build_index as bi_module
         with patch.object(bi_module, "IVF_THRESHOLD", 5):
-            # 4 vectors: below threshold → FlatIP
+            # 4 vectors: below threshold → SQ8
             vecs_small = random_embeddings(4)
             l2_normalize(vecs_small)
-            assert isinstance(build_index(vecs_small), faiss.IndexFlatIP)
+            assert isinstance(build_index(vecs_small), faiss.IndexScalarQuantizer)
 
-            # 5 vectors: at threshold → IVFFlat (nlist ≤ n so training succeeds)
+            # 5 vectors: at threshold → IVF+SQ8 (nlist ≤ n so training succeeds)
             with patch.object(bi_module, "IVF_NLIST", 2):
                 vecs_large = random_embeddings(5)
                 l2_normalize(vecs_large)
-                assert isinstance(build_index(vecs_large), faiss.IndexIVFFlat)
+                assert isinstance(build_index(vecs_large), faiss.IndexIVFScalarQuantizer)
 
 
 # ---------------------------------------------------------------------------
