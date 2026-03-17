@@ -8,7 +8,8 @@ existing skills are untouched, avoiding the ~60-minute full re-embed cost.
 Limitations:
   - Cannot update changed descriptions or metadata for existing skills.
   - Cannot remove skills deleted upstream.
-  - Only works with IndexFlatIP (< 50k vectors). IVFFlat requires full rebuild.
+  - Only works with IndexScalarQuantizer (< 30k vectors). IVFScalarQuantizer
+    requires full rebuild because centroids cannot be updated incrementally.
   Use full rebuild for any of the above.
 
 Steps:
@@ -136,7 +137,9 @@ def run_incremental_update(
     if index.ntotal >= IVF_THRESHOLD:
         raise IncrementalError(
             f"Index has {index.ntotal} vectors (≥ IVF_THRESHOLD {IVF_THRESHOLD}).\n"
-            "Incremental updates require IndexFlatIP. To rebuild the FAISS index from\n"
+            "Incremental updates require IndexScalarQuantizer (exact/flat). "
+            "At this size the index uses IndexIVFScalarQuantizer whose centroids "
+            "cannot be updated incrementally. To rebuild the FAISS index from\n"
             "existing embeddings without re-embedding (saves ~60 min):\n\n"
             "  python pipeline/build_index.py \\\n"
             "    --embeddings data/embeddings.npy \\\n"

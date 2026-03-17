@@ -48,11 +48,15 @@ def _make_unified_skills(tmp_path: Path, skills: list[dict], filename="new_skill
 
 
 def _make_flat_index(tmp_path: Path, n_vecs: int = 3, dim: int = 16) -> Path:
-    """Build a small IndexFlatIP and write it to disk."""
+    """Build a small IndexScalarQuantizer (SQ8) and write it to disk.
+
+    Mirrors the production index type used for corpora below IVF_THRESHOLD.
+    """
     rng = np.random.default_rng(42)
     vecs = rng.standard_normal((n_vecs, dim)).astype(np.float32)
     faiss.normalize_L2(vecs)
-    idx = faiss.IndexFlatIP(dim)
+    idx = faiss.IndexScalarQuantizer(dim, faiss.ScalarQuantizer.QT_8bit, faiss.METRIC_INNER_PRODUCT)
+    idx.train(vecs)
     idx.add(vecs)
     p = tmp_path / "index.faiss"
     faiss.write_index(idx, str(p))
