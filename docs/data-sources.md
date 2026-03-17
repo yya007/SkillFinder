@@ -15,14 +15,24 @@
 
 ---
 
+## Shared Crawler Infrastructure (`crawlers/base.py`)
+
+All five crawlers share these canonical utilities:
+
+- **`fetch_skill_md(session, repo, path, default_branch)`** — fetches `SKILL.md` via the GitHub Contents API using `github_get()` (exponential backoff + `X-RateLimit-Reset` sleep), resolves symlinks one level deep, and falls back `main → master` when the default branch is missing.
+- **`parse_frontmatter(content)`** — strips leading HTML comment blocks (`<!-- ... -->`) before parsing YAML, tolerates malformed YAML gracefully.
+- **`decode_b64_utf8(encoded)`** — decodes the base64+newline content returned by the Contents API.
+
+---
+
 ## Crawler Details
 
 ### SkillsMP (`crawlers/skillsmp_crawler.py`)
 
 Uses GitHub Code Search API with query `filename:SKILL.md`. Paginates through results (max 1,000 per query — use additional filters like `language:Markdown` or date ranges to get past the 1K cap). For each repo:
 
-1. Fetch `SKILL.md` raw content (via Contents API; resolves symlinks one level deep)
-2. Parse YAML frontmatter (`name`, `description`, `triggers`) — HTML comment headers before `---` are stripped automatically
+1. Fetch `SKILL.md` raw content via `fetch_skill_md()` in `crawlers/base.py` (uses `github_get()` for rate-limit-aware retries; resolves symlinks one level deep; falls back `main → master` when default branch is missing)
+2. Parse YAML frontmatter (`name`, `description`, `triggers`) via `parse_frontmatter()` in `crawlers/base.py` — HTML comment headers before `---` are stripped automatically
 3. Fetch repo metadata: `stargazers_count`, `pushed_at`, `topics`
 4. Optionally parse `README.md` first paragraph for supplemental description
 
@@ -38,8 +48,6 @@ Two-phase crawl:
 2. **Org/topic discovery** — query GitHub repository search for `org:openclaw`, `topic:openclaw`, and `topic:openclaw-skill`. Repos already covered by the awesome list are skipped to avoid double-counting.
 
 Each record that comes from ClawHub includes `safety_scan` field from VirusTotal results.
-SKILL.md files that are symlinks (GitHub Contents API returns `"type": "symlink"`) are resolved one level deep. Files that begin with HTML comments (e.g. copyright headers) before the YAML `---` block are handled by stripping those comments before frontmatter parsing.
-
 Source tag: `"clawhub"`. Install command: `clawhub install <name>` (openclaw platform).
 
 Output: `data/raw/clawhub.jsonl`
@@ -80,8 +88,7 @@ Known target repos:
 - `alirezarezvani/claude-skills`
 - Any public repo with a `marketplace.json` at root (discovered via GitHub Search)
 
-For each: clone or fetch at ref, parse `marketplace.json` (array of `{name, description, path}` entries), then read the `SKILL.md` at each path.
-Symlinked SKILL.md files and files beginning with HTML comment headers are handled the same way as in the other crawlers.
+For each: clone or fetch at ref, parse `marketplace.json` (array of `{name, description, path}` entries), then read the `SKILL.md` at each path via the canonical `fetch_skill_md()` from `crawlers/base.py`.
 
 Output: `data/raw/marketplace.jsonl`
 
