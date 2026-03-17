@@ -485,12 +485,16 @@ class TestRunEmbedIncremental:
         np.testing.assert_array_equal(out_vecs[0], original_vecs[0])
 
     def test_output_alignment_preserved(self, tmp_path, mock_ollama_embed):
-        """Row N in output embeddings matches line N in output ordered JSONL."""
+        """Row N in output embeddings matches line N in output ordered JSONL.
+
+        Specifically verifies that cached vectors land at the correct row indices
+        when cached and new records are interleaved in the input.
+        """
         cached = [{"id": f"c{i}", "embedding_text": f"cached {i}", "name": f"c{i}"} for i in range(3)]
         new = [{"id": f"n{i}", "embedding_text": f"new {i}", "name": f"n{i}"} for i in range(2)]
-        cache_emb, cache_ord, _ = self._make_cache(tmp_path, cached)
+        cache_emb, cache_ord, cache_vecs = self._make_cache(tmp_path, cached)
 
-        # Interleave cached and new records to test ordering
+        # Interleave cached and new: positions 0,2,4 are cached; 1,3 are new
         all_input = [cached[0], new[0], cached[1], new[1], cached[2]]
         input_path = tmp_path / "input.jsonl"
         self._write_input(input_path, all_input)
@@ -509,3 +513,15 @@ class TestRunEmbedIncremental:
             out_records = [json.loads(line) for line in f]
 
         assert out_vecs.shape[0] == len(out_records) == 5
+
+        # Verify record identity at each row
+        assert out_records[0]["id"] == "c0"
+        assert out_records[1]["id"] == "n0"
+        assert out_records[2]["id"] == "c1"
+        assert out_records[3]["id"] == "n1"
+        assert out_records[4]["id"] == "c2"
+
+        # Verify cached vectors appear verbatim at their interleaved positions
+        np.testing.assert_array_equal(out_vecs[0], cache_vecs[0])
+        np.testing.assert_array_equal(out_vecs[2], cache_vecs[1])
+        np.testing.assert_array_equal(out_vecs[4], cache_vecs[2])

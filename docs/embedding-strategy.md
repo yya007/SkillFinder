@@ -57,7 +57,34 @@ def ollama_embed(texts: list[str] | str) -> np.ndarray:
     return np.array(resp.json()["embeddings"], dtype=np.float32)
 ```
 
-Ollama supports batched input via `"input": [...]`. Use batch size 64–128 to stay within Ollama's default request limits.
+Ollama supports batched input via `"input": [...]`. `embed.py` uses `BATCH_SIZE = 128`.
+
+---
+
+## Incremental Embedding
+
+`embed.py` supports an incremental mode that reuses cached vectors for unchanged skills, avoiding redundant Ollama calls on full rebuilds.
+
+**How it works:**
+
+Pass the previous run's outputs as a cache:
+
+```bash
+python pipeline/embed.py \
+  --cache-embeddings data/prev_embeddings.npy \
+  --cache-ordered    data/prev_ordered.jsonl
+```
+
+A skill is a **cache hit** if and only if both its `id` and `embedding_text` match the cached entry. Any change to `embedding_text` (description, categories, name) triggers a re-embed. Skills absent from the cache are always embedded.
+
+**Cache invalidation rules:**
+- `id` changed → always a miss (e.g. monorepo ID migration)
+- `embedding_text` changed → miss; skill is re-embedded with updated content
+- Both match → hit; cached vector is copied into the output at the correct row
+
+**Row alignment guarantee:** cached and newly-embedded vectors are assembled in input order — row N in `embeddings.npy` always matches line N in `ordered.jsonl`, regardless of how cache hits and misses are interleaved.
+
+**Without cache flags**, `embed.py` behaves identically to before — all records are embedded via Ollama.
 
 ---
 
