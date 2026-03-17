@@ -11,7 +11,7 @@ Ships as a skill for Claude Code, OpenClaw, and Codex.
 | Lint | `ruff check scripts/ pipeline/ crawlers/` |
 | Test (unit, no network) | `pytest` |
 | Run a search | `python scripts/search.py "deploy k8s" --no-json` |
-| Crawl (requires GITHUB_TOKEN) | `python -m crawlers.skillsmp_crawler -o data/raw/skillsmp.jsonl` |
+| Crawl (requires GITHUB_TOKEN) | `python -m crawlers.skillsmp_crawler -o data/raw/skillsmp.jsonl > data/logs/skillsmp.log 2>&1` |
 | Full pipeline | `pipeline/normalize.py → embed.py → build_index.py` |
 
 ## Git Workflow
@@ -34,6 +34,7 @@ Ships as a skill for Claude Code, OpenClaw, and Codex.
 |-----------|---------|
 | `scripts/` | Runtime — shipped with skill to users |
 | `data/` | Index files — gitignored, downloaded at install time |
+| `data/logs/` | Crawler log files — redirect crawler output here |
 | `crawlers/` | CI only — not shipped to users |
 | `pipeline/` | CI only — not shipped to users |
 | `tests/` | Unit + integration (`tests/quality/` needs real index + Ollama) |
