@@ -239,15 +239,13 @@ def run_embed(
     # Partition records: cache hits vs. records that need embedding.
     # A cache hit requires the same id AND the same embedding_text.
     to_embed_records: list[dict] = []
-    to_embed_indices: list[int] = []
-    for i, rec in enumerate(records):
+    for rec in records:
         rid = rec.get("id", "")
         cached = cache.get(rid)
         if rid and cached is not None and cached[1] == rec.get("embedding_text", ""):
             pass  # cache hit — reuse existing vector
         else:
             to_embed_records.append(rec)
-            to_embed_indices.append(i)
 
     n_cached = len(records) - len(to_embed_records)
     logger.info(
