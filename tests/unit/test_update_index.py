@@ -12,12 +12,9 @@ External calls (GitHub API, file downloads) are patched. Tests verify:
   - run_update: end-to-end update orchestration
 """
 import hashlib
-import json
-import os
 import tarfile
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -66,7 +63,7 @@ class TestGetLatestRelease:
         return {
             "tag_name": tag,
             "assets": [{"name": asset_name, "browser_download_url": f"https://github.com/releases/{asset_name}", "size": 50_000_000}],
-            "body": f"**Skills indexed:** 14823\n**SHA256:** `abc123def456`",
+            "body": "**Skills indexed:** 14823\n**SHA256:** `abc123def456`",
         }
 
     def test_returns_dict_with_tag_name(self):

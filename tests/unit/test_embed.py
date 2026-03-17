@@ -9,7 +9,6 @@ External Ollama calls are patched. Tests verify:
   - OllamaError: raised on connection failure
 """
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +19,6 @@ from pipeline.embed import (
     BATCH_SIZE,
     DIM,
     MODEL,
-    OLLAMA_URL,
     OllamaError,
     check_ollama_available,
     embed_all,

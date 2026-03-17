@@ -308,9 +308,9 @@ class TestPassesQualityFilter:
 class TestNormalize:
     def test_deduplicates_overlapping_records(self, tmp_raw_dir, tmp_path):
         output = str(tmp_path / "out.jsonl")
-        count = normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output)
+        normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output)
         # kubernetes-deployer appears in skillsmp + clawhub + skillhub → 1 merged record
-        records = [json.loads(l) for l in open(output)]
+        records = [json.loads(line) for line in open(output)]  # noqa: SIM115
         k8s = [r for r in records if r["name"] == "kubernetes-deployer"]
         assert len(k8s) == 1
 
@@ -338,7 +338,7 @@ class TestNormalize:
     def test_drops_no_description_records(self, tmp_raw_dir, tmp_path):
         output = str(tmp_path / "out.jsonl")
         normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output)
-        records = [json.loads(l) for l in open(output)]
+        records = [json.loads(line) for line in open(output)]  # noqa: SIM115
         bad = [r for r in records if r["name"] == "no-description-skill"]
         assert len(bad) == 0
 
@@ -416,7 +416,7 @@ class TestTombstoneFiltering:
         output = str(tmp_path / "out.jsonl")
         normalize([str(raw)], output, min_skills=0)
 
-        out_records = [json.loads(l) for l in open(output) if l.strip()]
+        out_records = [json.loads(line) for line in open(output) if line.strip()]  # noqa: SIM115
         repo_urls = [r["repo_url"] for r in out_records]
         assert "https://github.com/user/deleted-skill" not in repo_urls
         assert "https://github.com/user/real-skill" in repo_urls

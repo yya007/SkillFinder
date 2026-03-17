@@ -13,11 +13,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import faiss
 import numpy as np
 import pytest
 
-from scripts.search import apply_filters, format_results, load_index, search
+from scripts.search import format_results, load_index, search
 
 
 def _build_test_index(tmp_path: Path, mock_embed_fn) -> Path:

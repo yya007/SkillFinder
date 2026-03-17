@@ -3,9 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from tests.crawlers.conftest import make_github_repo, SAMPLE_SKILL_MD
+from tests.crawlers.conftest import SAMPLE_SKILL_MD
 
 
 # ---------------------------------------------------------------------------

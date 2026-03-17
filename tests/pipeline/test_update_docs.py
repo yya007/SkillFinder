@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from pipeline.update_docs import (
     compute_stats,
@@ -145,7 +144,7 @@ class TestRenderSourceTable:
         stats = {"total": 50, "sources": {"skillsmp": 50}}
         table = render_source_table(stats)
         # clawhub not in sources; should still appear with 0
-        lines = [l for l in table.splitlines() if "clawhub_crawler" in l]
+        lines = [row for row in table.splitlines() if "clawhub_crawler" in row]
         assert lines
         assert "| 0 |" in lines[0]
 

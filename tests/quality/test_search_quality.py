@@ -11,7 +11,6 @@ Skip in CI by default: pytest -m "not quality"
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
