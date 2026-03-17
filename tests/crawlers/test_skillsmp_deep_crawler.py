@@ -10,15 +10,13 @@ Covers:
 """
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from crawlers.skillsmp_deep_crawler import (
     DATE_SHARDS,
     _OVERFLOW_THRESHOLD,
     cell_key,
-    get_cell_state,
     load_state,
     save_state,
 )
@@ -157,7 +155,7 @@ class TestExhaustionLogic:
         # so run() processes all _OVERFLOW_THRESHOLD items before moving on
         with patch("crawlers.skillsmp_deep_crawler._search_date_shard", side_effect=fake_search):
             with patch("crawlers.skillsmp_deep_crawler.fetch_repo_metadata", return_value={"default_branch": "main"}):
-                with patch("crawlers.skillsmp_deep_crawler._fetch_skill_md", return_value=None):
+                with patch("crawlers.skillsmp_deep_crawler.fetch_skill_md", return_value=None):
                     with patch("crawlers.skillsmp_deep_crawler.build_raw_record", return_value=None):
                         from crawlers.skillsmp_deep_crawler import run
                         run(**run_args)
@@ -235,7 +233,7 @@ class TestExhaustionLogic:
 
         with patch("crawlers.skillsmp_deep_crawler._search_date_shard", side_effect=counting_search):
             with patch("crawlers.skillsmp_deep_crawler.fetch_repo_metadata", return_value={"default_branch": "main"}):
-                with patch("crawlers.skillsmp_deep_crawler._fetch_skill_md", return_value="---\nname: test\n---"):
+                with patch("crawlers.skillsmp_deep_crawler.fetch_skill_md", return_value="---\nname: test\n---"):
                     with patch("crawlers.skillsmp_deep_crawler.build_raw_record", return_value=good_record):
                         from crawlers.skillsmp_deep_crawler import run
                         run(**run_args)

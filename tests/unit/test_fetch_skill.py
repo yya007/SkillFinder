@@ -9,9 +9,7 @@ HTTP calls are patched throughout. Tests verify:
   - fetch_and_output: file writing and string return
   - FetchError: raised when all URLs fail, contains attempted URLs
 """
-import os
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

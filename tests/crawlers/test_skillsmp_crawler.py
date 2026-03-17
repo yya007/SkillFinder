@@ -1,7 +1,7 @@
 """Tests for crawlers/skillsmp_crawler.py."""
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import patch
 
 import pytest
 
@@ -108,7 +108,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -137,7 +137,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -160,7 +160,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -184,7 +184,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
             # SKILL.md exists but has no 'name' → build_raw_record returns None
             mock_fetch_md.return_value = "---\ndescription: No name here.\n---\n# Docs"
             mock_get.return_value = search_resp
@@ -220,7 +220,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
             mock_meta.return_value = self._mock_meta()
@@ -293,94 +293,5 @@ class TestSkillsmpCrawlerNetwork:
         assert len(urls) == len(set(urls)), "Duplicate repo_urls found in output"
 
 
-# ---------------------------------------------------------------------------
-# TestParseFrontmatterSkillsmp
-# ---------------------------------------------------------------------------
-
-class TestParseFrontmatterSkillsmp:
-    """Unit tests for skillsmp_crawler._parse_frontmatter."""
-
-    def test_plain_frontmatter(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        result = _parse_frontmatter("---\nname: foo\n---\n")
-        assert result == {"name": "foo"}
-
-    def test_html_comment_before_frontmatter(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        result = _parse_frontmatter("<!-- copyright -->\n---\nname: bar\n---\n")
-        assert result == {"name": "bar"}
-
-    def test_multiple_html_comments(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        content = "<!-- first comment -->\n<!-- second comment -->\n---\nname: baz\n---\n"
-        result = _parse_frontmatter(content)
-        assert result == {"name": "baz"}
-
-    def test_empty_string(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        assert _parse_frontmatter("") == {}
-
-    def test_no_frontmatter(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        assert _parse_frontmatter("# Just a heading\n\nSome content.") == {}
-
-    def test_html_comment_only(self):
-        from crawlers.skillsmp_crawler import _parse_frontmatter
-        assert _parse_frontmatter("<!-- comment -->") == {}
-
-
-# ---------------------------------------------------------------------------
-# TestFetchSkillMdSkillsmp
-# ---------------------------------------------------------------------------
-
-class TestFetchSkillMdSkillsmp:
-    """Unit tests for skillsmp_crawler._fetch_skill_md with a mocked session."""
-
-    def _make_response(self, status_code=200, json_data=None):
-        mock_resp = MagicMock()
-        mock_resp.status_code = status_code
-        mock_resp.json.return_value = json_data or {}
-        return mock_resp
-
-    def test_symlink_resolved(self):
-        import base64
-        from crawlers.skillsmp_crawler import _fetch_skill_md
-
-        encoded = base64.b64encode(b"content").decode() + "\n"
-        session = MagicMock()
-        symlink_resp = self._make_response(200, {"type": "symlink", "target": "other/SKILL.md"})
-        file_resp = self._make_response(200, {"type": "file", "content": encoded})
-        # skillsmp tries multiple branches; provide enough responses
-        session.get.side_effect = [symlink_resp, file_resp]
-
-        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
-        assert result == "content"
-
-    def test_symlink_depth_limit(self):
-        from crawlers.skillsmp_crawler import _fetch_skill_md
-
-        session = MagicMock()
-        session.get.return_value = self._make_response(200, {"type": "symlink", "target": "other/SKILL.md"})
-
-        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=1)
-        assert result is None
-
-    def test_non_200_returns_none(self):
-        from crawlers.skillsmp_crawler import _fetch_skill_md
-
-        session = MagicMock()
-        session.get.return_value = self._make_response(404, {})
-
-        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
-        assert result is None
-
-    def test_normal_b64_decoded(self):
-        import base64
-        from crawlers.skillsmp_crawler import _fetch_skill_md
-
-        encoded = base64.b64encode(b"hello world").decode() + "\n"
-        session = MagicMock()
-        session.get.return_value = self._make_response(200, {"type": "file", "content": encoded})
-
-        result = _fetch_skill_md(session, "owner/repo", "SKILL.md", "main", _depth=0)
-        assert result == "hello world"
+# Note: _parse_frontmatter and _fetch_skill_md were moved to crawlers/base.py.
+# They are now tested in tests/crawlers/test_base.py.

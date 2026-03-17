@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.crawlers.conftest import SAMPLE_SKILL_MD
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +222,7 @@ class TestRunMarketplace:
 
         mock_session = MagicMock()
         with patch("crawlers.marketplace_crawler.find_skill_md_paths") as mock_find, \
-             patch("crawlers.marketplace_crawler.fetch_skill_content") as mock_content:
+             patch("crawlers.marketplace_crawler.fetch_skill_md") as mock_content:
             mock_find.return_value = {"foo/SKILL.md": ""}
             mock_content.return_value = None
 
@@ -296,93 +295,5 @@ class TestMarketplaceCrawlerNetwork:
                 )
 
 
-# ---------------------------------------------------------------------------
-# TestParseFrontmatterMarketplace
-# ---------------------------------------------------------------------------
-
-class TestParseFrontmatterMarketplace:
-    """Unit tests for marketplace_crawler._parse_frontmatter."""
-
-    def test_plain_frontmatter(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        result = _parse_frontmatter("---\nname: foo\n---\n")
-        assert result == {"name": "foo"}
-
-    def test_html_comment_before_frontmatter(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        result = _parse_frontmatter("<!-- copyright -->\n---\nname: bar\n---\n")
-        assert result == {"name": "bar"}
-
-    def test_multiple_html_comments(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        content = "<!-- first comment -->\n<!-- second comment -->\n---\nname: baz\n---\n"
-        result = _parse_frontmatter(content)
-        assert result == {"name": "baz"}
-
-    def test_empty_string(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        assert _parse_frontmatter("") == {}
-
-    def test_no_frontmatter(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        assert _parse_frontmatter("# Just a heading\n\nSome content.") == {}
-
-    def test_html_comment_only(self):
-        from crawlers.marketplace_crawler import _parse_frontmatter
-        assert _parse_frontmatter("<!-- comment -->") == {}
-
-
-# ---------------------------------------------------------------------------
-# TestFetchSkillContent
-# ---------------------------------------------------------------------------
-
-class TestFetchSkillContent:
-    """Unit tests for marketplace_crawler.fetch_skill_content with mocked github_get."""
-
-    def test_symlink_resolved(self):
-        import base64
-        from crawlers.marketplace_crawler import fetch_skill_content
-
-        encoded = base64.b64encode(b"content").decode() + "\n"
-        session = MagicMock()
-
-        with patch("crawlers.marketplace_crawler.github_get") as mock_get:
-            mock_get.side_effect = [
-                {"type": "symlink", "target": "SKILL.md"},
-                {"type": "file", "content": encoded},
-            ]
-            result = fetch_skill_content(session, "owner/repo", "subdir/SKILL.md", _depth=0)
-
-        assert result == "content"
-
-    def test_symlink_depth_limit(self):
-        from crawlers.marketplace_crawler import fetch_skill_content
-
-        session = MagicMock()
-        with patch("crawlers.marketplace_crawler.github_get") as mock_get:
-            mock_get.return_value = {"type": "symlink", "target": "SKILL.md"}
-            result = fetch_skill_content(session, "owner/repo", "SKILL.md", _depth=1)
-
-        assert result is None
-
-    def test_returns_none_on_none_data(self):
-        from crawlers.marketplace_crawler import fetch_skill_content
-
-        session = MagicMock()
-        with patch("crawlers.marketplace_crawler.github_get") as mock_get:
-            mock_get.return_value = None
-            result = fetch_skill_content(session, "owner/repo", "SKILL.md", _depth=0)
-
-        assert result is None
-
-    def test_normal_file_decoded(self):
-        import base64
-        from crawlers.marketplace_crawler import fetch_skill_content
-
-        encoded = base64.b64encode(b"hello world").decode() + "\n"
-        session = MagicMock()
-        with patch("crawlers.marketplace_crawler.github_get") as mock_get:
-            mock_get.return_value = {"type": "file", "content": encoded}
-            result = fetch_skill_content(session, "owner/repo", "SKILL.md", _depth=0)
-
-        assert result == "hello world"
+# Note: _parse_frontmatter and fetch_skill_content were moved to crawlers/base.py.
+# They are now tested in tests/crawlers/test_base.py.

@@ -21,8 +21,6 @@ import pytest
 
 from pipeline.build_index import (
     DIM,
-    IVF_NLIST,
-    IVF_THRESHOLD,
     AlignmentError,
     build_index,
     l2_normalize,

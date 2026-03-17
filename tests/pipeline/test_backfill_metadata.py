@@ -5,9 +5,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from pipeline.backfill_metadata import _repo_full_name, backfill_file
+import base64
+
+from pipeline.backfill_metadata import _repo_full_name, backfill_descriptions, backfill_file
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +235,6 @@ class TestBackfillFileZeroStars:
 # ---------------------------------------------------------------------------
 # TestBackfillDescriptions
 # ---------------------------------------------------------------------------
-
-import base64
-
-from pipeline.backfill_metadata import backfill_descriptions
-
 
 class TestBackfillDescriptions:
     """Tests for backfill_descriptions function."""

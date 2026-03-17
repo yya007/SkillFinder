@@ -15,7 +15,6 @@ Each record conforms to the raw record schema defined in PRD-001.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import logging
 import re
@@ -23,8 +22,6 @@ import sys
 import time
 from urllib.robotparser import RobotFileParser
 from urllib.parse import parse_qs, urljoin, urlparse
-
-import yaml
 
 try:
     from bs4 import BeautifulSoup
@@ -34,14 +31,15 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from crawlers.base import (
-    GITHUB_API,
     add_to_filter_cache,
     extract_github_url,
     fetch_repo_metadata,
+    fetch_skill_md,
     find_skill_md_paths,
     infer_platforms,
     load_filter_cache,
     make_session,
+    parse_frontmatter,
     write_jsonl,
 )
 
@@ -55,44 +53,6 @@ _REQUEST_DELAY = 0.5                  # seconds between HTTP requests (polite cr
 _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfinder)"
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# SKILL.md helpers
-# ---------------------------------------------------------------------------
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter from a SKILL.md string."""
-    if not content or not content.startswith("---"):
-        return {}
-    end_match = re.search(r"\n---\s*\n", content[3:])
-    if not end_match:
-        return {}
-    yaml_text = content[3: end_match.start() + 3]
-    try:
-        fm = yaml.safe_load(yaml_text)
-        if not isinstance(fm, dict):
-            return {}
-        return fm
-    except yaml.YAMLError:
-        return {}
-
-
-def _fetch_skill_md(session, repo_full_name: str, path: str = "SKILL.md", default_branch: str = "main") -> str | None:
-    """Fetch raw SKILL.md content from a GitHub repo via GitHub API."""
-    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
-    try:
-        resp = session.get(url, params={"ref": default_branch}, timeout=30)
-    except Exception as exc:
-        log.debug("Network error fetching SKILL.md from %s: %s", repo_full_name, exc)
-        return None
-    if resp.status_code == 200:
-        try:
-            encoded = resp.json().get("content", "")
-            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-        except Exception:
-            return None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -588,11 +548,11 @@ def scrape_skill_listing(
 
                     if skill_path:
                         skill_md_url = f"{github_url}/blob/{default_branch}/{skill_path}"
-                        skill_content = _fetch_skill_md(
+                        skill_content = fetch_skill_md(
                             github_session, full_name, path=skill_path, default_branch=default_branch
                         )
                         if skill_content:
-                            fm = _parse_frontmatter(skill_content)
+                            fm = parse_frontmatter(skill_content)
                             platforms = infer_platforms(fm, "skillhub")
 
                 unified = {

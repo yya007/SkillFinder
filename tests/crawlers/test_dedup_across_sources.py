@@ -6,12 +6,10 @@ Verifies that when the same GitHub repo appears in multiple crawler outputs
 them into a single unified record rather than duplicating them.
 """
 import json
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from pipeline.normalize import normalize, canonical_key, skill_id
+from pipeline.normalize import normalize, skill_id
 
 
 class TestGithubUrlDedup:
@@ -160,8 +158,8 @@ class TestGithubUrlDedup:
         f = tmp_path / "raw.jsonl"
         f.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         out = tmp_path / "out.jsonl"
-        count = normalize([str(f)], str(out))
-        ids = [json.loads(l)["id"] for l in out.read_text().strip().splitlines()]
+        normalize([str(f)], str(out))
+        ids = [json.loads(line)["id"] for line in out.read_text().strip().splitlines()]
         assert len(ids) == len(set(ids)), "Non-unique IDs found in normalized output"
 
 
@@ -196,7 +194,7 @@ class TestCrossSourceDedupNetwork:
         # After normalize, duplicates should be gone
         unified_out = str(tmp_path / "unified.jsonl")
         count = normalize([skillsmp_out, marketplace_out], unified_out)
-        unified_records = [json.loads(l) for l in open(unified_out)]
+        unified_records = [json.loads(line) for line in open(unified_out)]  # noqa: SIM115
         assert len(unified_records) == count
         # All unified records should have unique IDs
         ids = [r["id"] for r in unified_records]

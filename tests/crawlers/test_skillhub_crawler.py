@@ -1,7 +1,7 @@
 """Tests for crawlers/skillhub_crawler.py."""
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -248,7 +248,7 @@ class TestScrapeSkillListing:
              patch("crawlers.skillhub_crawler.get_skill_detail", return_value=self._make_detail(0)), \
              patch("crawlers.skillhub_crawler._load_robots") as mock_robots:
             mock_robots.return_value.can_fetch = lambda *a: True
-            results = list(scrape_skill_listing())
+            list(scrape_skill_listing())
 
         # Should have called with "" (uncategorised), "devops", "testing"
         assert "" in call_categories
@@ -364,5 +364,5 @@ class TestSkillhubCrawlerNetwork:
         from crawlers.skillhub_crawler import run
         out = str(tmp_path / "out.jsonl")
         run(out, limit=10)
-        urls = [json.loads(l)["repo_url"] for l in Path(out).read_text().strip().splitlines()]
+        urls = [json.loads(line)["repo_url"] for line in Path(out).read_text().strip().splitlines()]
         assert len(urls) == len(set(urls)), "Duplicate repo_urls in SkillHub output"

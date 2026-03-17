@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from pipeline.crawl_report import compute_stats, load_raw, print_report, main
 
@@ -172,5 +171,5 @@ class TestPrintReport:
         records = self._make_source_records(100, no_desc=3)
         records_by_source = {"testsrc": records}
         warn_lines = print_report(records_by_source)
-        desc_warns = [l for l in warn_lines if "missing description" in l and "testsrc" in l]
+        desc_warns = [w for w in warn_lines if "missing description" in w and "testsrc" in w]
         assert len(desc_warns) == 0

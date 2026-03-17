@@ -3,9 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from tests.crawlers.conftest import make_github_repo, SAMPLE_SKILL_MD
+from tests.crawlers.conftest import SAMPLE_SKILL_MD
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ class TestTopicCrawlerRun:
             patch("crawlers.topic_crawler._discover_topic_repos"),
             patch("crawlers.topic_crawler.fetch_repo_metadata"),
             patch("crawlers.topic_crawler.find_skill_md_paths"),
-            patch("crawlers.topic_crawler._fetch_skill_md"),
+            patch("crawlers.topic_crawler.fetch_skill_md"),
         )
 
     def test_writes_records_for_discovered_repos(self, tmp_path):
@@ -99,7 +98,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -116,7 +115,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -135,7 +134,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -153,7 +152,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = [f"user/skill-{i}" for i in range(10)]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -170,7 +169,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/no-skill-md", "user/has-skill-md"]
             mock_meta.return_value = _mock_meta()
             mock_paths.side_effect = [{}, {"SKILL.md": ""}]
@@ -195,7 +194,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/already-covered", "user/new-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -224,7 +223,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -240,7 +239,7 @@ class TestTopicCrawlerRun:
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.topic_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.topic_crawler.fetch_skill_md") as mock_skill_md:
             mock_disc.return_value = ["user/my-cool-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}

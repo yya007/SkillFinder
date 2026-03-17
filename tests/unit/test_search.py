@@ -10,7 +10,6 @@ Ollama calls are patched throughout. Tests verify:
   - format_results: JSON and human-readable output correctness
 """
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import faiss

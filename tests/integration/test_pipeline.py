@@ -11,11 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import faiss
-import numpy as np
 import pytest
 
 from pipeline.build_index import (
-    AlignmentError,
     read_version_txt,
     run_build_index,
 )
@@ -81,8 +79,8 @@ class TestFullPipeline:
             str(tmp_path / "version.txt"),
         )
 
-        ordered_names = [json.loads(l)["name"] for l in open(tmp_path / "ordered.jsonl")]
-        meta_names = [json.loads(l)["name"] for l in open(tmp_path / "metadata.jsonl")]
+        ordered_names = [json.loads(line)["name"] for line in open(tmp_path / "ordered.jsonl")]  # noqa: SIM115
+        meta_names = [json.loads(line)["name"] for line in open(tmp_path / "metadata.jsonl")]  # noqa: SIM115
         assert ordered_names == meta_names
 
     def test_version_txt_skill_count_matches_index(self, tmp_path, mock_ollama_embed):
@@ -110,7 +108,7 @@ class TestFullPipeline:
         unified = str(tmp_path / "unified_skills.jsonl")
         normalize(raw_files, unified)
 
-        records = [json.loads(l) for l in open(unified)]
+        records = [json.loads(line) for line in open(unified)]  # noqa: SIM115
         ids = [r["id"] for r in records]
         assert len(ids) == len(set(ids)), "Duplicate IDs found in normalized output"
 
