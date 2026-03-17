@@ -18,6 +18,9 @@ Public API:
   load_crawl_state()            - Load per-source crawl state from data/crawl_state/
   save_crawl_state()            - Atomically save crawl state to data/crawl_state/
   make_tombstone()              - Create a tombstone record for a deleted skill
+  decode_b64_utf8()             - Decode a base64 string to UTF-8
+  parse_frontmatter()           - Extract YAML frontmatter from a SKILL.md string
+  fetch_skill_md()              - Fetch raw SKILL.md content (rate-limit-aware, symlink-safe)
 """
 
 from __future__ import annotations
@@ -746,6 +749,142 @@ def make_tombstone(repo_url: str, skill_md_url: str, source: str) -> dict:
         "tombstone": True,
         "deleted_at": _utc_now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# SKILL.md content helpers
+# ---------------------------------------------------------------------------
+
+def decode_b64_utf8(encoded: str) -> str:
+    """Decode a base64-encoded string to UTF-8, replacing invalid bytes.
+
+    Strips embedded newlines (as returned by the GitHub Contents API) before
+    decoding.
+
+    Args:
+        encoded: Base64-encoded string (may contain newlines).
+
+    Returns:
+        Decoded string, with invalid bytes replaced by the U+FFFD character.
+    """
+    import base64
+    return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+
+
+def parse_frontmatter(content: str) -> dict:
+    """Extract YAML frontmatter from a SKILL.md string.
+
+    Strips leading HTML comments (``<!-- ... -->``) before the opening ``---``
+    so that files starting with copyright headers are parsed correctly.  All
+    five crawlers previously had their own copy of this logic; this canonical
+    version is the superset.
+
+    Args:
+        content: Raw SKILL.md file content.
+
+    Returns:
+        Dict of frontmatter fields, or an empty dict if no frontmatter is
+        present or parsing fails.
+    """
+    import re
+    import yaml
+
+    if not content:
+        return {}
+    # Strip leading HTML comments (e.g. <!-- Copyright 2025 Acme Corp. -->)
+    stripped = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL).lstrip()
+    if not stripped.startswith("---"):
+        return {}
+    end_match = re.search(r"\n---\s*\n", stripped[3:])
+    if not end_match:
+        return {}
+    yaml_text = stripped[3: end_match.start() + 3]
+    try:
+        fm = yaml.safe_load(yaml_text)
+        if not isinstance(fm, dict):
+            return {}
+        return fm
+    except yaml.YAMLError:
+        return {}
+
+
+def fetch_skill_md(
+    session,
+    repo_full_name: str,
+    path: str = "SKILL.md",
+    default_branch: str = "main",
+    _depth: int = 0,
+) -> str | None:
+    """Fetch raw SKILL.md content via the GitHub Contents API.
+
+    This is the canonical, superset implementation replacing the five per-crawler
+    ``_fetch_skill_md`` / ``fetch_skill_content`` helpers.  Key improvements:
+
+    * Uses ``github_get()`` (not ``session.get()`` directly) so rate-limit
+      handling, backoff, and retry logic are applied consistently.
+    * Resolves symlinks: when the Contents API returns ``"type": "symlink"``,
+      the target path is resolved relative to the file's directory and fetched
+      recursively (max depth 1 to prevent infinite loops).
+    * Branch fallback: tries ``default_branch`` first, then ``"main"``, then
+      ``"master"``.  This matches the behaviour previously only available in
+      ``skillsmp_crawler._fetch_skill_md``.
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+        path:           Path to the file within the repo (default "SKILL.md").
+        default_branch: Branch to try first.
+        _depth:         Internal recursion guard — do not set manually.
+
+    Returns:
+        Decoded file content as a string, or None on any error.
+    """
+    import posixpath
+
+    branches_to_try = [default_branch]
+    for fallback in ("main", "master"):
+        if fallback not in branches_to_try:
+            branches_to_try.append(fallback)
+
+    for branch in branches_to_try:
+        url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
+        try:
+            data = github_get(session, url, params={"ref": branch})
+        except RuntimeError as exc:
+            logger.debug(
+                "Could not fetch %s@%s from %s: %s", path, branch, repo_full_name, exc
+            )
+            continue
+
+        if data is None:
+            continue
+
+        # Resolve symlinks (max one level of recursion)
+        if data.get("type") == "symlink" and _depth == 0:
+            target = data.get("target", "")
+            if target:
+                resolved = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(path), target)
+                )
+                logger.debug(
+                    "Symlink at %s in %s → %s", path, repo_full_name, resolved
+                )
+                return fetch_skill_md(
+                    session, repo_full_name, resolved, branch, _depth=1
+                )
+
+        encoded = data.get("content", "")
+        if not encoded:
+            return None
+        try:
+            return decode_b64_utf8(encoded)
+        except Exception as exc:
+            logger.debug(
+                "Base64 decode error for %s/%s: %s", repo_full_name, path, exc
+            )
+            continue
+
+    return None
 
 
 def infer_platforms(frontmatter: dict, source: str) -> list[str]:

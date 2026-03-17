@@ -26,23 +26,21 @@ import base64
 import json
 import logging
 import os
-import re
 import sys
-from typing import Optional
 
 # Ensure project root is on sys.path when run as a script
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import yaml
 
 from crawlers.base import (
     GITHUB_API,
     extract_github_url,
     fetch_repo_metadata,
+    fetch_skill_md,
     find_skill_md_paths,
     github_get,
     infer_platforms,
     make_session,
+    parse_frontmatter,
     write_jsonl,
 )
 
@@ -104,7 +102,7 @@ def list_skill_dirs(session, repo_full_name: str) -> list[dict]:
     paths = find_skill_md_paths(session, repo_full_name)
     entries = []
     for path in paths:
-        content = fetch_skill_content(session, repo_full_name, path)
+        content = fetch_skill_md(session, repo_full_name, path)
         name = _derive_name_from_path(path, repo_full_name)
 
         entries.append({
@@ -118,90 +116,6 @@ def list_skill_dirs(session, repo_full_name: str) -> list[dict]:
 
     logger.debug("Found %d SKILL.md file(s) in %s", len(entries), repo_full_name)
     return entries
-
-
-def fetch_skill_content(
-    session,
-    repo_full_name: str,
-    path: str,
-    _depth: int = 0,
-) -> Optional[str]:
-    """Fetch the raw text of a file via the GitHub Contents API.
-
-    GET /repos/{full_name}/contents/{path}
-
-    Resolves symlinks (GitHub returns ``"type": "symlink"`` with a ``target``
-    field instead of base64 ``content``) up to one level deep.
-
-    Args:
-        session:        A requests.Session from make_session().
-        repo_full_name: "{owner}/{repo}" string.
-        path:           Path to the file within the repo.
-
-    Returns:
-        Decoded file content as a string, or None on any error.
-    """
-    if _depth > 1:
-        return None
-    import posixpath
-    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
-    try:
-        data = github_get(session, url)
-    except RuntimeError as exc:
-        logger.warning("Could not fetch %s/%s: %s", repo_full_name, path, exc)
-        return None
-
-    if data is None:
-        return None
-
-    if data.get("type") == "symlink":
-        target = data.get("target", "")
-        if not target:
-            return None
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
-        return fetch_skill_content(session, repo_full_name, resolved, _depth + 1)
-
-    encoded = data.get("content", "")
-    if not encoded:
-        return None
-    try:
-        return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-    except Exception as exc:
-        logger.warning("Base64 decode error for %s/%s: %s", repo_full_name, path, exc)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Frontmatter parsing
-# ---------------------------------------------------------------------------
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter from a SKILL.md string.
-
-    Returns a dict of the frontmatter fields, or an empty dict if the file
-    has no frontmatter or parsing fails.  Tolerates files that begin with
-    HTML comments (e.g. copyright headers) before the opening ``---``.
-    """
-    if not content:
-        return {}
-    # Strip leading HTML comments and blank lines so files that start with
-    # <!-- ... --> before the YAML block are handled correctly.
-    stripped = re.sub(r"^(\s*<!--.*?-->\s*)+", "", content, flags=re.DOTALL)
-    if not stripped.startswith("---"):
-        return {}
-
-    end_match = re.search(r"\n---\s*\n", stripped[3:])
-    if not end_match:
-        return {}
-
-    yaml_text = stripped[3: end_match.start() + 3]
-    try:
-        fm = yaml.safe_load(yaml_text)
-        if not isinstance(fm, dict):
-            return {}
-        return fm
-    except yaml.YAMLError:
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +139,7 @@ def build_raw_record(entry: dict) -> dict:
         Raw record dict conforming to the crawler schema.
     """
     content = entry.get("skill_md_content") or ""
-    frontmatter = _parse_frontmatter(content) if content else {}
+    frontmatter = parse_frontmatter(content) if content else {}
 
     parent_url = entry.get("parent_repo_url", "")
     fm_repo_url = frontmatter.get("repo_url", "")

@@ -241,7 +241,7 @@ class TestRunClawhub:
             patch("crawlers.clawhub_crawler.fetch_awesome_readme"),
             patch("crawlers.clawhub_crawler.fetch_repo_metadata"),
             patch("crawlers.clawhub_crawler.find_skill_md_paths"),
-            patch("crawlers.clawhub_crawler._fetch_skill_md"),
+            patch("crawlers.clawhub_crawler.fetch_skill_md"),
         )
 
     def test_respects_limit(self, tmp_path):
@@ -250,7 +250,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -274,7 +274,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_with_non_github
             mock_meta.return_value = self._mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -294,7 +294,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -323,7 +323,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = SAMPLE_AWESOME_README
             mock_meta.return_value = self._mock_meta()
             mock_paths.return_value = {"SKILL.md": ""}
@@ -344,7 +344,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_with_subtree
             mock_meta.return_value = self._mock_meta()
             mock_skill_md.return_value = None
@@ -370,7 +370,7 @@ class TestRunClawhub:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_monorepo
             mock_meta.return_value = self._mock_meta()
             mock_skill_md.return_value = None
@@ -418,7 +418,7 @@ class TestRunClawhub:
 
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md:
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md:
             mock_fetch.return_value = readme_monorepo
             mock_meta.return_value = self._mock_meta()
             mock_skill_md.return_value = None
@@ -498,7 +498,7 @@ class TestDiscoverOpenclawRepos:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md, \
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md, \
              patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
             mock_fetch.return_value = "# Awesome List\n\nNo skills.\n"
             mock_meta.return_value = meta
@@ -524,7 +524,7 @@ class TestDiscoverOpenclawRepos:
         with patch("crawlers.clawhub_crawler.fetch_awesome_readme") as mock_fetch, \
              patch("crawlers.clawhub_crawler.fetch_repo_metadata") as mock_meta, \
              patch("crawlers.clawhub_crawler.find_skill_md_paths") as mock_paths, \
-             patch("crawlers.clawhub_crawler._fetch_skill_md") as mock_skill_md, \
+             patch("crawlers.clawhub_crawler.fetch_skill_md") as mock_skill_md, \
              patch("crawlers.clawhub_crawler._discover_openclaw_repos") as mock_discover:
             mock_fetch.return_value = SAMPLE_AWESOME_README  # k8s-deployer, docker-manager, test-runner
             mock_meta.return_value = meta

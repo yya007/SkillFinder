@@ -223,7 +223,7 @@ class TestRunMarketplace:
 
         mock_session = MagicMock()
         with patch("crawlers.marketplace_crawler.find_skill_md_paths") as mock_find, \
-             patch("crawlers.marketplace_crawler.fetch_skill_content") as mock_content:
+             patch("crawlers.marketplace_crawler.fetch_skill_md") as mock_content:
             mock_find.return_value = {"foo/SKILL.md": ""}
             mock_content.return_value = None
 

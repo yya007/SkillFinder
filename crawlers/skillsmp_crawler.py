@@ -20,11 +20,9 @@ The GITHUB_TOKEN environment variable is used when --token is not supplied.
 from __future__ import annotations
 
 import argparse
-import base64
 import itertools
 import logging
 import os
-import re
 import sys
 import time
 from typing import Iterator
@@ -32,17 +30,17 @@ from typing import Iterator
 # Ensure project root is on sys.path when run as a script
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import yaml
-
 from crawlers.base import (
     GITHUB_API,
     extract_github_url,
     fetch_repo_metadata,
+    fetch_skill_md,
     github_get,
     infer_platforms,
-    load_existing_urls,
+    load_existing_records,
     load_filter_cache,
     make_session,
+    parse_frontmatter,
     write_jsonl,
 )
 
@@ -203,94 +201,6 @@ def search_skill_repos(
         time.sleep(2)
 
 
-def _fetch_skill_md(
-    session,
-    repo_full_name: str,
-    path: str = "SKILL.md",
-    default_branch: str = "main",
-    _depth: int = 0,
-) -> str | None:
-    """Fetch raw SKILL.md content using the path reported by code search.
-
-    Uses the exact path from the search result item so we don't blindly assume
-    the file is at the repo root.  Falls back to main/master when the default
-    branch 404s.  Uses session.get() directly (not github_get) to avoid
-    wasting retry quota on expected 404s.
-
-    Resolves symlinks (GitHub returns ``"type": "symlink"`` with a ``target``
-    field instead of base64 ``content``) up to one level deep.
-    """
-    import posixpath
-    if _depth > 1:
-        return None
-
-    branches_to_try = [default_branch]
-    for fallback in ("main", "master"):
-        if fallback not in branches_to_try:
-            branches_to_try.append(fallback)
-
-    for branch in branches_to_try:
-        url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
-        try:
-            resp = session.get(url, params={"ref": branch}, timeout=30)
-        except Exception as exc:
-            logger.debug("Network error fetching %s@%s: %s", path, branch, exc)
-            continue
-
-        if resp.status_code != 200:
-            # 404 means file not at this path/branch — try next branch silently
-            continue
-        try:
-            data = resp.json()
-        except Exception:
-            continue
-
-        if data.get("type") == "symlink":
-            target = data.get("target", "")
-            if not target:
-                return None
-            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
-            return _fetch_skill_md(session, repo_full_name, resolved, branch, _depth + 1)
-
-        try:
-            encoded = data.get("content", "")
-            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-        except Exception:
-            continue
-
-    return None
-
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter from a SKILL.md string.
-
-    Returns a dict with 'name', 'description', 'triggers' keys (all optional).
-    Returns an empty dict if no frontmatter is present or parsing fails.
-    Tolerates files that begin with HTML comments before the opening ``---``.
-    """
-    if not content:
-        return {}
-    # Strip leading HTML comments and blank lines so files that start with
-    # <!-- ... --> before the YAML block are handled correctly.
-    stripped = re.sub(r"^(\s*<!--.*?-->\s*)+", "", content, flags=re.DOTALL)
-    if not stripped.startswith("---"):
-        return {}
-
-    # Find the closing ---
-    end_match = re.search(r"\n---\s*\n", stripped[3:])
-    if not end_match:
-        return {}
-
-    yaml_text = stripped[3: end_match.start() + 3]
-    try:
-        fm = yaml.safe_load(yaml_text)
-        if not isinstance(fm, dict):
-            return {}
-        return fm
-    except yaml.YAMLError:
-        return {}
-
-
 def build_raw_record(repo: dict, skill_md_content: str = None, skill_md_url: str = "") -> dict | None:
     """Convert a GitHub repo dict and optional SKILL.md content into a raw record.
 
@@ -322,7 +232,7 @@ def build_raw_record(repo: dict, skill_md_content: str = None, skill_md_url: str
 
     frontmatter: dict = {}
     if skill_md_content:
-        frontmatter = _parse_frontmatter(skill_md_content)
+        frontmatter = parse_frontmatter(skill_md_content)
 
     # Require a name in the SKILL.md frontmatter — repos without one are false
     # positives (incidental files named *skill.md, not real agent skills).
@@ -397,14 +307,20 @@ def run(
         filter_cache = load_filter_cache(filter_cache_path)
         logger.info("Filter cache loaded: %d entries", len(filter_cache))
 
-    existing_urls: set[str] = set()
+    # Load existing records for resume mode, keyed by skill_md_url (or repo_url
+    # for legacy records without skill_md_url).  Using skill_md_url as the key
+    # allows multiple SKILL.md files from the same monorepo to be tracked
+    # independently — a repo_url-keyed set would block all-but-first.
+    existing_records: dict[str, dict] = {}
     if resume:
-        existing_urls = load_existing_urls(output_path)
-        logger.info("Resume mode: skipping %d already-collected repos", len(existing_urls))
+        existing_records = load_existing_records(output_path)
+        logger.info("Resume mode: %d skill keys already in output", len(existing_records))
 
-    # Dedup across size shards — a repo with SKILL.md files of different
-    # sizes can appear in multiple shards.
-    seen_full_names: set[str] = set()
+    # Dedup across size shards and base queries.
+    # Key: (full_name, skill_path) — allows multiple SKILL.md files from the
+    # same monorepo to be indexed in one run (fixes the monorepo dedup bug
+    # where seen_full_names keyed by full_name alone dropped all-but-first).
+    seen_skill_keys: set[tuple[str, str]] = set()
 
     batch: list[dict] = []
     batch_size = 50
@@ -437,10 +353,18 @@ def run(
                 repo_name = repo.get("name", "")
                 full_name = repo.get("full_name", f"{owner_login}/{repo_name}")
 
-                # Dedup across shards and base queries
-                if full_name in seen_full_names:
+                # Determine skill path before dedup so the key includes the path
+                if base_query == "filename:marketplace.json":
+                    skill_path = "SKILL.md"
+                else:
+                    skill_path = item.get("path", "SKILL.md")
+
+                # Dedup across shards and base queries by (full_name, skill_path) —
+                # allows monorepos with multiple SKILL.md files to be indexed fully.
+                skill_run_key = (full_name, skill_path)
+                if skill_run_key in seen_skill_keys:
                     continue
-                seen_full_names.add(full_name)
+                seen_skill_keys.add(skill_run_key)
 
                 # Verify the repo is actually on GitHub
                 html_url = repo.get("html_url", f"https://github.com/{full_name}")
@@ -454,30 +378,31 @@ def run(
                     logger.debug("Skipping %s: in filter cache", repo_url)
                     continue
 
-                if repo_url in existing_urls:
-                    logger.debug("Skipping already-seen repo: %s", repo_url)
-                    continue
-
                 # Fetch enriched repo metadata (stars, pushed_at, default_branch)
                 meta = fetch_repo_metadata(session, full_name)
                 repo_enriched = {**repo, **meta}
 
-                # Fetch SKILL.md content.  For marketplace.json queries the search
-                # result path is the JSON file, not a SKILL.md — fall back to the
-                # repo root so we can still validate via frontmatter name check.
                 default_branch = meta.get("default_branch", "main")
-                if base_query == "filename:marketplace.json":
-                    skill_path = "SKILL.md"
-                else:
-                    skill_path = item.get("path", "SKILL.md")
-                skill_content = _fetch_skill_md(
-                    session, full_name, path=skill_path, default_branch=default_branch
-                )
 
                 # skill_md_url is always set from the resolved skill_path
                 skill_md_url = (
                     f"https://github.com/{full_name}/blob/{default_branch}/{skill_path}"
                 )
+
+                # Resume check: keyed by skill_md_url (monorepo-safe) with
+                # repo_url fallback for legacy records without skill_md_url.
+                if resume:
+                    if skill_md_url in existing_records or repo_url in existing_records:
+                        logger.debug("Skipping already-crawled skill (resume): %s", skill_md_url)
+                        continue
+
+                # Fetch SKILL.md content.  For marketplace.json queries the search
+                # result path is the JSON file, not a SKILL.md — fall back to the
+                # repo root so we can still validate via frontmatter name check.
+                skill_content = fetch_skill_md(
+                    session, full_name, path=skill_path, default_branch=default_branch
+                )
+
                 record = build_raw_record(
                     repo_enriched,
                     skill_md_content=skill_content,
@@ -491,7 +416,6 @@ def run(
                         filter_cache.add(repo_url)
                     continue
                 batch.append(record)
-                existing_urls.add(repo_url)
 
                 if len(batch) >= batch_size:
                     written += write_jsonl(batch, output_path, append=(written > 0 or resume))

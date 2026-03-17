@@ -1,4 +1,5 @@
 """Tests for crawlers/base.py."""
+import base64
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -6,14 +7,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from crawlers.base import (
+    decode_b64_utf8,
     extract_github_url,
-    write_jsonl,
-    load_existing_urls,
-    load_existing_records,
-    load_crawl_state,
-    save_crawl_state,
-    make_tombstone,
     fetch_commit_sha,
+    fetch_skill_md,
+    load_crawl_state,
+    load_existing_records,
+    load_existing_urls,
+    make_tombstone,
+    parse_frontmatter,
+    save_crawl_state,
+    write_jsonl,
 )
 
 
@@ -503,3 +507,208 @@ class TestFetchCommitSha:
         with patch("crawlers.base.github_get", return_value=None):
             sha = fetch_commit_sha(mock_session, "user/repo")
         assert sha is None
+
+
+# ---------------------------------------------------------------------------
+# TestDecodeB64Utf8
+# ---------------------------------------------------------------------------
+
+class TestDecodeB64Utf8:
+    def test_decodes_simple_ascii(self):
+        encoded = base64.b64encode(b"hello world").decode()
+        assert decode_b64_utf8(encoded) == "hello world"
+
+    def test_strips_newlines_before_decoding(self):
+        # GitHub API wraps base64 at 60-char column boundaries
+        raw = b"Hello, GitHub Contents API!"
+        encoded_with_newlines = base64.b64encode(raw).decode()
+        # Insert a newline mid-string as GitHub does
+        chunked = "\n".join(encoded_with_newlines[i:i+10] for i in range(0, len(encoded_with_newlines), 10))
+        assert decode_b64_utf8(chunked) == raw.decode()
+
+    def test_replaces_invalid_utf8_bytes(self):
+        # \xff is not valid UTF-8 — should become U+FFFD replacement character
+        encoded = base64.b64encode(b"\xff\xfe").decode()
+        result = decode_b64_utf8(encoded)
+        assert "\ufffd" in result
+
+    def test_decodes_multi_line_yaml(self):
+        content = "---\nname: test-skill\ndescription: A skill.\n---\n# Body\n"
+        encoded = base64.b64encode(content.encode()).decode()
+        assert decode_b64_utf8(encoded) == content
+
+
+# ---------------------------------------------------------------------------
+# TestParseFrontmatter
+# ---------------------------------------------------------------------------
+
+class TestParseFrontmatter:
+    def test_extracts_basic_frontmatter(self):
+        content = "---\nname: my-skill\ndescription: Does stuff.\n---\n# Body\n"
+        fm = parse_frontmatter(content)
+        assert fm["name"] == "my-skill"
+        assert fm["description"] == "Does stuff."
+
+    def test_returns_empty_dict_for_empty_string(self):
+        assert parse_frontmatter("") == {}
+
+    def test_returns_empty_dict_when_no_frontmatter(self):
+        assert parse_frontmatter("# Just a heading\n\nSome content.\n") == {}
+
+    def test_returns_empty_dict_for_malformed_yaml(self):
+        content = "---\n: invalid: yaml: [\n---\n"
+        assert parse_frontmatter(content) == {}
+
+    def test_returns_empty_dict_when_yaml_not_a_dict(self):
+        # YAML that parses to a list instead of a dict
+        content = "---\n- item1\n- item2\n---\n"
+        assert parse_frontmatter(content) == {}
+
+    def test_strips_leading_html_comment(self):
+        content = "<!-- Copyright 2025 Acme Corp. -->\n---\nname: skill-with-copyright\n---\n"
+        fm = parse_frontmatter(content)
+        assert fm["name"] == "skill-with-copyright"
+
+    def test_strips_multi_line_html_comment(self):
+        content = "<!--\nCopyright (c) 2025\nAll rights reserved.\n-->\n---\nname: test\n---\n"
+        fm = parse_frontmatter(content)
+        assert fm["name"] == "test"
+
+    def test_handles_content_without_closing_dashes(self):
+        content = "---\nname: incomplete\n"
+        assert parse_frontmatter(content) == {}
+
+    def test_handles_multiple_frontmatter_fields(self):
+        content = "---\nname: skill\ntriggers:\n  - deploy\n  - ship\nplatforms:\n  - claude_code\n---\n"
+        fm = parse_frontmatter(content)
+        assert fm["name"] == "skill"
+        assert fm["triggers"] == ["deploy", "ship"]
+        assert fm["platforms"] == ["claude_code"]
+
+
+# ---------------------------------------------------------------------------
+# TestFetchSkillMd
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMd:
+    """Unit tests for fetch_skill_md() in crawlers/base.py."""
+
+    def _make_contents_response(self, content: str) -> dict:
+        """Build a fake GitHub Contents API response for a regular file."""
+        encoded = base64.b64encode(content.encode()).decode()
+        return {"type": "file", "content": encoded, "encoding": "base64"}
+
+    def test_returns_decoded_content_on_success(self):
+        mock_session = MagicMock()
+        skill_text = "---\nname: test\n---\n"
+        with patch("crawlers.base.github_get") as mock_get:
+            mock_get.return_value = self._make_contents_response(skill_text)
+            result = fetch_skill_md(mock_session, "user/repo")
+        assert result == skill_text
+
+    def test_returns_none_on_runtime_error(self):
+        mock_session = MagicMock()
+        with patch("crawlers.base.github_get", side_effect=RuntimeError("404")):
+            result = fetch_skill_md(mock_session, "user/missing")
+        assert result is None
+
+    def test_tries_default_branch_first(self):
+        mock_session = MagicMock()
+        calls = []
+
+        def side_effect(session, url, params=None, **kwargs):
+            calls.append(params.get("ref") if params else None)
+            return self._make_contents_response("---\nname: x\n---\n")
+
+        with patch("crawlers.base.github_get", side_effect=side_effect):
+            fetch_skill_md(mock_session, "user/repo", default_branch="develop")
+
+        assert calls[0] == "develop"
+
+    def test_falls_back_to_main_when_default_branch_fails(self):
+        mock_session = MagicMock()
+        call_refs = []
+
+        def side_effect(session, url, params=None, **kwargs):
+            ref = params.get("ref") if params else None
+            call_refs.append(ref)
+            if ref == "develop":
+                raise RuntimeError("404")
+            return self._make_contents_response("---\nname: x\n---\n")
+
+        with patch("crawlers.base.github_get", side_effect=side_effect):
+            result = fetch_skill_md(mock_session, "user/repo", default_branch="develop")
+
+        assert result is not None
+        assert "develop" in call_refs
+        assert "main" in call_refs
+
+    def test_falls_back_to_master_when_main_fails(self):
+        mock_session = MagicMock()
+        call_refs = []
+
+        def side_effect(session, url, params=None, **kwargs):
+            ref = params.get("ref") if params else None
+            call_refs.append(ref)
+            if ref in ("main",):
+                raise RuntimeError("404")
+            return self._make_contents_response("---\nname: x\n---\n")
+
+        with patch("crawlers.base.github_get", side_effect=side_effect):
+            result = fetch_skill_md(mock_session, "user/repo", default_branch="main")
+
+        assert result is not None
+        assert "master" in call_refs
+
+    def test_resolves_symlink_one_level_deep(self):
+        mock_session = MagicMock()
+        symlink_response = {"type": "symlink", "target": "../../shared/SKILL.md"}
+        resolved_content = "---\nname: shared-skill\n---\n"
+
+        call_count = {"n": 0}
+
+        def side_effect(session, url, params=None, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return symlink_response
+            return self._make_contents_response(resolved_content)
+
+        with patch("crawlers.base.github_get", side_effect=side_effect):
+            result = fetch_skill_md(mock_session, "user/repo", path="subdir/SKILL.md")
+
+        assert result == resolved_content
+        assert call_count["n"] == 2
+
+    def test_symlink_depth_guard_prevents_infinite_recursion(self):
+        """A symlink at _depth=1 is NOT followed — no infinite loop."""
+        mock_session = MagicMock()
+        symlink_response = {"type": "symlink", "target": "other/SKILL.md"}
+
+        with patch("crawlers.base.github_get", return_value=symlink_response):
+            result = fetch_skill_md(mock_session, "user/repo", _depth=1)
+
+        # At depth=1, symlink is not followed → no content → None
+        assert result is None
+
+    def test_returns_none_when_content_is_empty(self):
+        mock_session = MagicMock()
+        with patch("crawlers.base.github_get", return_value={"type": "file", "content": ""}):
+            result = fetch_skill_md(mock_session, "user/repo")
+        assert result is None
+
+    def test_does_not_duplicate_main_in_branch_list(self):
+        """When default_branch is 'main', branches_to_try should not contain 'main' twice."""
+        mock_session = MagicMock()
+        call_refs = []
+
+        def side_effect(session, url, params=None, **kwargs):
+            ref = params.get("ref") if params else None
+            call_refs.append(ref)
+            raise RuntimeError("always fail")
+
+        with patch("crawlers.base.github_get", side_effect=side_effect):
+            fetch_skill_md(mock_session, "user/repo", default_branch="main")
+
+        # main should appear only once, master also once
+        assert call_refs.count("main") == 1
+        assert call_refs.count("master") == 1

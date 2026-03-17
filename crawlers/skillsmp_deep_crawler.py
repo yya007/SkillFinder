@@ -44,6 +44,7 @@ from crawlers.base import (
     GITHUB_API,
     extract_github_url,
     fetch_repo_metadata,
+    fetch_skill_md,
     github_get,
     load_existing_urls,
     load_filter_cache,
@@ -55,7 +56,6 @@ from crawlers.skillsmp_crawler import (
     STAR_SHARDS,
     _BASE_QUERY,
     _OVERFLOW_THRESHOLD,
-    _fetch_skill_md,
     build_raw_record,
 )
 
@@ -367,7 +367,7 @@ def run(  # noqa: PLR0912, PLR0915
 
                 default_branch = meta.get("default_branch", "main")
                 skill_path = item.get("path", "SKILL.md")
-                skill_content = _fetch_skill_md(
+                skill_content = fetch_skill_md(
                     session, full_name, path=skill_path, default_branch=default_branch
                 )
                 skill_md_url = (

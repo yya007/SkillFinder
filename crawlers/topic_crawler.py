@@ -26,11 +26,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import sys
 from pathlib import Path
-
-import yaml
 
 # Ensure project root is on sys.path when run as a script
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -39,11 +36,13 @@ from crawlers.base import (
     GITHUB_API,
     add_to_filter_cache,
     fetch_repo_metadata,
+    fetch_skill_md,
     find_skill_md_paths,
     github_get,
     infer_platforms,
     load_filter_cache,
     make_session,
+    parse_frontmatter,
     write_jsonl,
 )
 
@@ -86,41 +85,6 @@ TOPIC_QUERIES: list[str] = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter from a SKILL.md string."""
-    if not content or not content.startswith("---"):
-        return {}
-    end_match = re.search(r"\n---\s*\n", content[3:])
-    if not end_match:
-        return {}
-    yaml_text = content[3: end_match.start() + 3]
-    try:
-        fm = yaml.safe_load(yaml_text)
-        if not isinstance(fm, dict):
-            return {}
-        return fm
-    except yaml.YAMLError:
-        return {}
-
-
-def _fetch_skill_md(session, repo_full_name: str, path: str, default_branch: str) -> str | None:
-    """Fetch raw SKILL.md content from a specific path in a GitHub repo."""
-    import base64
-    url = f"{GITHUB_API}/repos/{repo_full_name}/contents/{path}"
-    try:
-        resp = session.get(url, params={"ref": default_branch}, timeout=30)
-    except Exception as exc:
-        log.debug("Network error fetching %s from %s: %s", path, repo_full_name, exc)
-        return None
-    if resp.status_code == 200:
-        try:
-            encoded = resp.json().get("content", "")
-            return base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
-        except Exception:
-            return None
-    return None
-
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -354,11 +318,11 @@ def run(
 
             # Fetch SKILL.md for name/description/platform detection
             fm: dict = {}
-            skill_content = _fetch_skill_md(
+            skill_content = fetch_skill_md(
                 session, full_name, path=skill_path, default_branch=default_branch
             )
             if skill_content:
-                fm = _parse_frontmatter(skill_content)
+                fm = parse_frontmatter(skill_content)
 
             # Derive name/description from frontmatter or path/repo
             skill_dir = skill_path.rsplit("/SKILL.md", 1)[0] if "/" in skill_path else ""

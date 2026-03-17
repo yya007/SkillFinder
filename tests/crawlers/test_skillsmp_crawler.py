@@ -108,7 +108,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -137,7 +137,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -160,7 +160,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
 
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
@@ -184,7 +184,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
             # SKILL.md exists but has no 'name' → build_raw_record returns None
             mock_fetch_md.return_value = "---\ndescription: No name here.\n---\n# Docs"
             mock_get.return_value = search_resp
@@ -220,7 +220,7 @@ class TestRunSkillsmp:
         with patch("crawlers.skillsmp_crawler.make_session"), \
              patch("crawlers.skillsmp_crawler.github_get") as mock_get, \
              patch("crawlers.skillsmp_crawler.fetch_repo_metadata") as mock_meta, \
-             patch("crawlers.skillsmp_crawler._fetch_skill_md") as mock_fetch_md:
+             patch("crawlers.skillsmp_crawler.fetch_skill_md") as mock_fetch_md:
             mock_fetch_md.return_value = SAMPLE_SKILL_MD
             mock_get.return_value = search_resp
             mock_meta.return_value = self._mock_meta()
