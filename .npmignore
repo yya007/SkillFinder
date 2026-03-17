@@ -4,7 +4,6 @@ pipeline/
 tests/
 docs/
 logs/
-data/
 .github/
 
 # Dev config
@@ -17,8 +16,9 @@ requirements-dev.txt
 BACKLOG.md
 CLAUDE.md
 
-# Python artifacts
+# Python artifacts (must be explicit for scripts/ subdirectory)
 __pycache__/
+scripts/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -26,6 +26,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Dev/CI shell scripts inside scripts/
+scripts/npm-release.sh
+scripts/trial_crawl.sh
 
 # Git
 .git/

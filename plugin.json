@@ -1,6 +1,6 @@
 {
   "name": "skill-finder",
-  "description": "Search 10,000+ curated agent skills by describing what you want to do. Runs entirely on-device via a local FAISS index — no API calls, no latency.",
+  "description": "Search 33,000+ curated agent skills by describing what you want to do. Runs entirely on-device via a local FAISS index — no API calls, no latency.",
   "version": "0.1.0",
   "author": {
     "name": "yya007",
