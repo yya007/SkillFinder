@@ -1,5 +1,5 @@
-date: 2026-03-15
-skill_count: 14306
-embed_model: 
-index_sha256: da3db25960567e222f43b38be405ee53a5162b221d7a9f86e37ed924d5002f38
-metadata_sha256: 6518bb2be83f2be990cfb358d4c955ad54047515fb2b9a5ae88c092922dda2bf
+date: 2026-03-17
+skill_count: 33827
+embed_model: qwen3-embedding:0.6b
+index_sha256: ae42cedce53b0d902dffc4c00fefe16e88b97ec55a71f106469152676ba7d079
+metadata_sha256: 466f520b9b4e0cf733857f7055177bc3b7865b1fd8a6de383f3ad32b5f8f94e3
