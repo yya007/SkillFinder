@@ -1,19 +1,20 @@
+<div align="center">
+
 # SkillFinder
 
-**Universal agent skill discovery — find the right skill in seconds.**
+**Find the right agent skill in seconds — local search, no API needed.**
 
-SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
+[![npm](https://img.shields.io/npm/v/@yya007/skill-finder?label=npm&color=cb3837)](https://www.npmjs.com/package/@yya007/skill-finder)
+[![Stars](https://img.shields.io/github/stars/yya007/SkillFinder?style=social)](https://github.com/yya007/SkillFinder)
+[![MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Index updated](https://img.shields.io/badge/index-2026--03--17-blue)](data/version.txt)
 
-**Indexes skills for:** Claude Code · OpenClaw · Codex
+</div>
 
----
-
-## What it does
-
-Describe what you need → SkillFinder searches a pre-built local vector index → returns ranked matches with quality signals and install commands.
+SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
-You: find a skill for deploying kubernetes clusters
+You: /skill-finder deploy kubernetes clusters with rollback
 
 Agent: Found 3 skills for "deploying kubernetes clusters":
 
@@ -32,6 +33,54 @@ Agent: Found 3 skills for "deploying kubernetes clusters":
 Want me to fetch the full SKILL.md for any of these before you install?
 ```
 
+Or just describe what you need — the skill also triggers automatically from natural language:
+_"find a skill for deploying kubernetes clusters"_, _"is there a skill for SQL migrations"_, etc.
+
+---
+
+## Why not just Google it?
+
+The [Agent Skills](https://agentskills.io) open standard is supported by Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and other tools. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
+
+**Searching the web manually:**
+
+```
+$ # Google: "kubernetes deploy claude code skill"
+→ 2,840,000 results — blog posts, Stack Overflow, unrelated GitHub repos
+→ No quality signals: is this repo maintained? 5 stars or 5,000?
+→ No install commands visible in results
+→ GitHub code search requires login; finds files, not skills as units
+→ May take 20–30 minutes to find 3 relevant options — if they exist at all
+```
+
+**SkillFinder:**
+
+```
+You: /skill-finder deploy kubernetes clusters with rollback
+
+Agent: Found 3 skills for "deploying kubernetes clusters":
+
+1. k8s-deployer  ⭐ 142
+   Deploy and manage Kubernetes clusters with rollbacks and blue-green deploys.
+   Install: /plugin install k8s-deployer
+
+2. helm-chart-manager  ⭐ 89
+   Manage Helm chart lifecycle: install, upgrade, diff, and rollback.
+   Install: /plugin install helm-chart-manager
+
+3. terraform-k8s  ⭐ 61
+   Provision Kubernetes infrastructure on AWS/GCP/Azure via Terraform.
+   Install: /plugin install terraform-k8s
+```
+
+Or query the index directly from the CLI:
+
+```bash
+$ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
+```
+
+Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included.
+
 ---
 
 ## For end users — install and search
@@ -43,25 +92,34 @@ Want me to fetch the full SKILL.md for any of these before you install?
 
 ### Install
 
-The pre-built index is included — no build step needed.
+**Option 1 — npx (easiest, auto-detects your agent):**
 
-**Step 1 — Get the files**
+```bash
+npx skills add yya007/SkillFinder
+```
 
-| Agent | Command |
-|-------|---------|
-| Claude Code | `git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder` |
-| Codex | `git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder` |
-| OpenClaw | `clawhub install skill-finder` |
+Uses the [`skills`](https://skills.sh) CLI — detects which agents you have installed and copies files to the right directory automatically.
 
-Alternatively, install via npm and copy to your agent's skills directory:
+**Option 2 — npm:**
 
 ```bash
 npm install -g @yya007/skill-finder
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder  # Claude Code
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder   # Codex
 ```
 
-**Step 2 — Finish setup (all platforms)**
+Then copy to your agent's skills directory:
+
+| Agent | Skills directory |
+|-------|-----------------|
+| Claude Code | `~/.claude/skills/skill-finder` |
+| OpenClaw | `~/.openclaw/skills/skill-finder` |
+| Codex | `~/.codex/skills/skill-finder` |
+
+```bash
+# Copy once (pick your agent's dir from the table above):
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
+```
+
+**Finish setup (all platforms):**
 
 ```bash
 cd ~/.claude/skills/skill-finder   # or your platform's skills dir
@@ -69,9 +127,28 @@ pip install -r scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
 
-That's it. Ask your agent: _"find a skill for X"_
+That's it. Ask your agent: _"find a skill for X"_ or invoke the skill explicitly  _"/skill-finder"_
 
-> **Optional:** run `python scripts/update_index.py` to pull the latest weekly index if your clone is more than a week old.
+> **OpenClaw:** ClawHub listing coming soon. Until then, install via npm or
+> `git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder`.
+
+<details>
+<summary>Alternative: git clone</summary>
+
+```bash
+# Claude Code
+git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
+
+# Codex
+git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
+
+# OpenClaw
+git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder
+```
+
+Then run the finish-setup block above.
+
+</details>
 
 ### Usage — natural language (recommended)
 
@@ -92,14 +169,11 @@ When using an agent (Claude Code, Codex, OpenClaw, etc.), just describe what you
 ```bash
 cd ~/.claude/skills/skill-finder
 
-# Search (returns up to 30 candidates, the agent proposes the best ≤5)
-python scripts/search.py "deploy kubernetes clusters" --propose 10
+# Search all skills (all platforms, recommended)
+python scripts/search.py "deploy kubernetes clusters" --no-json
 
-# Filter to Claude Code skills only
+# Optionally filter to a specific platform
 python scripts/search.py "deploy kubernetes clusters" --platform claude_code
-
-# Filter to OpenClaw skills only
-python scripts/search.py "web scraping" --platform openclaw
 
 # Require skills that passed ClawHub safety scan
 python scripts/search.py "web scraping" --safety_only
@@ -114,55 +188,7 @@ python scripts/search.py "pptx presentation" --no-json --propose 5
 python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
 ```
 
-### Platform filter values
-
-| Platform | `--platform` value |
-|----------|--------------------|
-| Claude Code | `claude_code` |
-| OpenClaw | `openclaw` |
-| Codex | `codex` |
-
----
-
-## Why not just Google it?
-
-The [Agent Skills](https://agentskills.io) open standard is supported by Claude Code, Cursor, VS Code Copilot, GitHub Copilot, OpenAI Codex, Gemini CLI, Goose, Roo Code, and other tools. Thousands of `SKILL.md` files exist across GitHub — with no unified way to find them.
-
-**Searching the web manually:**
-
-```
-$ # Google: "kubernetes deploy claude code skill"
-→ 2,840,000 results — blog posts, Stack Overflow, unrelated GitHub repos
-→ No quality signals: is this repo maintained? 5 stars or 5,000?
-→ No install commands visible in results
-→ GitHub code search requires login; finds files, not skills as units
-→ 20–30 minutes to find 3 relevant options — if they exist at all
-```
-
-**SkillFinder:**
-
-```
-$ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
-
-[!] NOTE: Skills are third-party code. Always review before installing.
-
-1. k8s-deployer  ⭐ 142
-   Deploy and manage Kubernetes clusters with rollbacks and blue-green deploys.
-   https://github.com/user/k8s-deployer
-   [claude_code] /plugin install k8s-deployer
-
-2. helm-chart-manager  ⭐ 89
-   Manage Helm chart lifecycle: install, upgrade, diff, and rollback.
-   https://github.com/user/helm-chart-manager
-   [claude_code] /plugin install helm-chart-manager
-
-3. terraform-k8s  ⭐ 61
-   Provision Kubernetes infrastructure on AWS/GCP/Azure via Terraform.
-   https://github.com/user/terraform-k8s
-   [claude_code] /plugin install terraform-k8s
-```
-
-Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included.
+The `--platform` flag is optional and accepts: `claude_code`, `openclaw`, `codex`.
 
 ---
 
@@ -293,6 +319,8 @@ pytest tests/quality/ -v -m quality
 | 5k+ | 5,108 | ███░░░░░░░░░░░░░░░░░ 15% |
 | **Total** | **33,827** | |
 <!-- stats:index-distribution:end -->
+
+> **Not shown:** skills with 0–9 stars that are not listed in a curated registry (ClawHub, SkillHub, or the Anthropic marketplace) are dropped from the index. Skills from curated registries are kept regardless of star count.
 
 ---
 
