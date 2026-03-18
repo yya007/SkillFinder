@@ -54,9 +54,10 @@ When this skill triggers, follow this workflow exactly.
 
 **Note:** Skills are third-party code — always check the Skill link before installing anything from an unfamiliar author.
 
-> **Platform default:** Use `--platform claude_code` when running as Claude Code,
-> `--platform openclaw` when running as OpenClaw, `--platform codex` when running
-> as Codex. Always honour an explicit platform request from the user.
+> **Platform filter:** Do NOT apply `--platform` by default — the index covers skills
+> across all platforms and many skills work on multiple agents. Only pass
+> `--platform <value>` when the user explicitly asks for a platform-specific search
+> (e.g. "find me a Claude Code skill for..."). Values: `claude_code`, `openclaw`, `codex`.
 
 ### Step 0 — Check availability
 
@@ -96,28 +97,23 @@ from what the user typed.
 
 Run searches in order, stopping as soon as you have ≥3 good matches:
 
-**Tier 1 — Default (quality-first, platform-specific):**
+**Tier 1 — Default (quality-first, all platforms):**
 ```bash
-python scripts/search.py "<reformulated query>" --json --propose 5 --platform <your_platform> --min_stars 10
+python scripts/search.py "<reformulated query>" --json --propose 5 --min_stars 10
 ```
 
 **Tier 2 — Relax star threshold (if Tier 1 returns fewer than 3 good matches):**
-```bash
-python scripts/search.py "<reformulated query>" --json --propose 5 --platform <your_platform>
-```
-
-**Tier 3 — Cross-platform, no star filter (if Tier 2 still returns fewer than 3):**
 ```bash
 python scripts/search.py "<reformulated query>" --json --propose 5
 ```
 
 Rules:
 - `--propose 5` is the default; scale up to `--propose 10` for broad queries or if the user asks for more options. If the user specifies a number of results (e.g. "give me 10"), use that directly.
-- Use the platform default from the callout above. If the user explicitly asks for a skill on a different platform (e.g. "find an OpenClaw skill for…"), override with `--platform openclaw` or `--platform codex` and skip the platform-specific tiers.
-- **ClawHub-sourced skills are OpenClaw-only** — they carry no `claude_code` install command and are excluded from Tier 1 and Tier 2 when `--platform claude_code` is active. They will appear in Tier 3 (cross-platform). When presenting them, always label them *(openclaw only — not installable in Claude Code)*.
+- Only add `--platform <value>` when the user explicitly asks for a platform-specific search (e.g. "find an OpenClaw skill for…"). Apply it to both tiers in that case.
+- **ClawHub-sourced skills are OpenClaw-only** — they carry no `claude_code` install command. When presenting them, always label them *(openclaw only — not installable in Claude Code)*.
 - If the user specifies a star threshold explicitly (e.g. "only well-known skills" or "min 50 stars"), use that in place of `--min_stars 10`.
 - If the user asks for fewer results (e.g. "just the top 3"), adjust the presented count accordingly.
-- For Tier 2/3 results, note the relaxed filter in the response (see Step 5).
+- For Tier 2 results, note the relaxed filter in the response (see Step 5).
 
 ### Step 3 — Parse and threshold-check
 
@@ -184,8 +180,8 @@ Use `skill_md_url` from the result for the `Skill:` link. Fall back to `repo_url
 
 Only show the `claude_code` entry from `install_cmd` by default. Mention other platforms exist only if the user asked.
 
-If results came from Tier 2 or Tier 3 fallback, add a note after the freshness disclaimer:
-> "These results include skills with fewer stars / from additional platforms because top-rated Claude Code-only matches were limited for this query."
+If results came from Tier 2 fallback, add a note after the freshness disclaimer:
+> "These results include skills with fewer stars because top-rated matches were limited for this query."
 
 ### Step 6 — Offer next step
 

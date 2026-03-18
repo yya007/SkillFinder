@@ -1,16 +1,17 @@
+<div align="center">
+
 # SkillFinder
 
-**Universal agent skill discovery — find the right skill in seconds.**
+**Find the right agent skill in seconds — 33,000+ indexed, runs entirely local.**
 
-SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query.
+[![npm](https://img.shields.io/npm/v/@yya007/skill-finder?label=npm&color=cb3837)](https://www.npmjs.com/package/@yya007/skill-finder)
+[![Stars](https://img.shields.io/github/stars/yya007/SkillFinder?style=social)](https://github.com/yya007/SkillFinder)
+[![MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Index updated](https://img.shields.io/badge/index-2026--03--17-blue)](data/version.txt)
 
-**Indexes skills for:** Claude Code · OpenClaw · Codex
+</div>
 
----
-
-## What it does
-
-Describe what you need → SkillFinder searches a pre-built local vector index → returns ranked matches with quality signals and install commands.
+SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
 You: find a skill for deploying kubernetes clusters
@@ -31,96 +32,6 @@ Agent: Found 3 skills for "deploying kubernetes clusters":
 
 Want me to fetch the full SKILL.md for any of these before you install?
 ```
-
----
-
-## For end users — install and search
-
-### Prerequisites
-
-- Python 3.10+
-- [Ollama](https://ollama.com/install) installed locally
-
-### Install
-
-The pre-built index is included — no build step needed.
-
-**Step 1 — Get the files**
-
-| Agent | Command |
-|-------|---------|
-| Claude Code | `git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder` |
-| Codex | `git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder` |
-| OpenClaw | `clawhub install skill-finder` |
-
-Alternatively, install via npm and copy to your agent's skills directory:
-
-```bash
-npm install -g @yya007/skill-finder
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder  # Claude Code
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder   # Codex
-```
-
-**Step 2 — Finish setup (all platforms)**
-
-```bash
-cd ~/.claude/skills/skill-finder   # or your platform's skills dir
-pip install -r scripts/requirements.txt
-ollama pull qwen3-embedding:0.6b
-```
-
-That's it. Ask your agent: _"find a skill for X"_
-
-> **Optional:** run `python scripts/update_index.py` to pull the latest weekly index if your clone is more than a week old.
-
-### Usage — natural language (recommended)
-
-When using an agent (Claude Code, Codex, OpenClaw, etc.), just describe what you need:
-
-- "find a skill for deploying kubernetes clusters"
-- "is there a skill that writes and runs SQL migrations"
-- "what skills are available for web scraping"
-- "compare skills for Terraform infrastructure"
-
-### Usage — CLI
-
-> **CLI vs agent:** `scripts/search.py` returns a raw vector-similarity ranking.
-> The agent layer (query expansion, tiered fallback, reranking by intent) is not
-> replicated here. Use the CLI for scripting or development; use the agent
-> integration for discovery in normal use.
-
-```bash
-cd ~/.claude/skills/skill-finder
-
-# Search (returns up to 30 candidates, the agent proposes the best ≤5)
-python scripts/search.py "deploy kubernetes clusters" --propose 10
-
-# Filter to Claude Code skills only
-python scripts/search.py "deploy kubernetes clusters" --platform claude_code
-
-# Filter to OpenClaw skills only
-python scripts/search.py "web scraping" --platform openclaw
-
-# Require skills that passed ClawHub safety scan
-python scripts/search.py "web scraping" --safety_only
-
-# Filter by minimum star count
-python scripts/search.py "ci/cd pipeline" --min_stars 50
-
-# Human-readable output instead of JSON
-python scripts/search.py "pptx presentation" --no-json --propose 5
-
-# Fetch a specific skill's full SKILL.md before installing
-python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
-```
-
-### Platform filter values
-
-| Platform | `--platform` value |
-|----------|--------------------|
-| Claude Code | `claude_code` |
-| OpenClaw | `openclaw` |
-| Codex | `codex` |
 
 ---
 
@@ -163,6 +74,114 @@ $ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
 ```
 
 Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included.
+
+---
+
+## For end users — install and search
+
+### Prerequisites
+
+- Python 3.10+
+- [Ollama](https://ollama.com/install) installed locally
+
+### Install
+
+> **Quick start:**
+> 1. `npm install -g @yya007/skill-finder`
+> 2. Copy to your agent's skills directory (see table below)
+> 3. `pip install -r scripts/requirements.txt && ollama pull qwen3-embedding:0.6b`
+
+**Recommended (npm):**
+
+```bash
+npm install -g @yya007/skill-finder
+```
+
+Then copy to your agent's skills directory:
+
+| Agent | Skills directory |
+|-------|-----------------|
+| Claude Code | `~/.claude/skills/skill-finder` |
+| OpenClaw | `~/.openclaw/skills/skill-finder` |
+| Codex | `~/.codex/skills/skill-finder` |
+
+```bash
+# Copy once (pick your agent's dir from the table above):
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
+```
+
+**Finish setup (all platforms):**
+
+```bash
+cd ~/.claude/skills/skill-finder   # or your platform's skills dir
+pip install -r scripts/requirements.txt
+ollama pull qwen3-embedding:0.6b
+```
+
+That's it. Ask your agent: _"find a skill for X"_
+
+> **Optional:** run `python scripts/update_index.py` to pull the latest weekly index if your clone is more than a week old.
+
+> **OpenClaw:** ClawHub listing coming soon. Until then, install via npm or
+> `git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder`.
+
+<details>
+<summary>Alternative: git clone</summary>
+
+```bash
+# Claude Code
+git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
+
+# Codex
+git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
+
+# OpenClaw
+git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder
+```
+
+Then run the finish-setup block above.
+
+</details>
+
+### Usage — natural language (recommended)
+
+When using an agent (Claude Code, Codex, OpenClaw, etc.), just describe what you need:
+
+- "find a skill for deploying kubernetes clusters"
+- "is there a skill that writes and runs SQL migrations"
+- "what skills are available for web scraping"
+- "compare skills for Terraform infrastructure"
+
+### Usage — CLI
+
+> **CLI vs agent:** `scripts/search.py` returns a raw vector-similarity ranking.
+> The agent layer (query expansion, tiered fallback, reranking by intent) is not
+> replicated here. Use the CLI for scripting or development; use the agent
+> integration for discovery in normal use.
+
+```bash
+cd ~/.claude/skills/skill-finder
+
+# Search all skills (all platforms, recommended)
+python scripts/search.py "deploy kubernetes clusters" --no-json
+
+# Optionally filter to a specific platform
+python scripts/search.py "deploy kubernetes clusters" --platform claude_code
+
+# Require skills that passed ClawHub safety scan
+python scripts/search.py "web scraping" --safety_only
+
+# Filter by minimum star count
+python scripts/search.py "ci/cd pipeline" --min_stars 50
+
+# Human-readable output instead of JSON
+python scripts/search.py "pptx presentation" --no-json --propose 5
+
+# Fetch a specific skill's full SKILL.md before installing
+python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
+```
+
+The `--platform` flag is optional and accepts: `claude_code`, `openclaw`, `codex`.
 
 ---
 
