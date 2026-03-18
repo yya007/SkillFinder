@@ -2,8 +2,8 @@
 name: npm-release
 description: >
   Publish the @yya007/skill-finder npm package. Guides through login check,
-  dry-run preview, local smoke test, version bump (patch/minor/major),
-  npm publish, and git tag.
+  OSS precheck (secrets scan + README accuracy), dry-run preview, local
+  smoke test, version bump (patch/minor/major), npm publish, and git tag.
 triggers:
   - release to npm
   - publish npm package
@@ -44,7 +44,66 @@ Report the current version to the user and ask what type of bump they want: **pa
 
 ---
 
-### Step 3 — Dry run (always run before publishing)
+### Step 3 — OSS precheck
+
+Run this before touching the package to catch anything that shouldn't ship.
+
+**3a — Secrets scan:** search all tracked files for credentials.
+
+```bash
+git ls-files | xargs grep -l "ghp_[a-zA-Z0-9]\{36\}\|npm_[a-zA-Z0-9]\{36\}\|sk-[a-zA-Z0-9]\{32\}" 2>/dev/null
+```
+
+```bash
+git ls-files | xargs grep -rn "password\s*=\s*['\"][^'\"]\|api_key\s*=\s*['\"][^'\"]\|secret\s*=\s*['\"][^'\"]" 2>/dev/null
+```
+
+If any real secrets are found (not placeholders like `ghp_your_token_here` or `fake-token`), stop immediately and tell the user.
+
+**3b — Sensitive files check:** confirm no `.env`, credential, or key files are tracked.
+
+```bash
+git ls-files | grep -E "\.(env|key|pem|p12|pfx|crt|secret)$|credentials|\.npmrc$"
+```
+
+Any output here is a blocker — remove those files and purge from git history before proceeding.
+
+**3c — README accuracy check:**
+
+Check that the skill count in the README matches `data/version.txt`:
+
+```bash
+python3 -c "
+import re, sys
+readme = open('README.md').read()
+version = open('data/version.txt').read()
+
+# Extract actual count from version.txt
+actual = int(re.search(r'skill_count:\s*(\d+)', version).group(1))
+
+# Extract the rounded/displayed count from stats marker
+m = re.search(r'stats:skill-count:start -->(.*?)<!--', readme)
+displayed = m.group(1).strip() if m else 'NOT FOUND'
+
+print(f'data/version.txt skill_count: {actual:,}')
+print(f'README stats marker:          {displayed}')
+
+# Check filter logic description is accurate
+if 'Listed in a curated registry' in readme or 'SkillHub rank S or A' in readme:
+    print('WARN: README still contains outdated filter rules (curated registry / SkillHub rank exemptions)')
+    sys.exit(1)
+else:
+    print('OK: filter logic description looks current')
+"
+```
+
+If the skill count in the README is stale (off by more than a minor rounding), update the stats marker and the tagline count, then commit the fix before proceeding.
+
+If outdated filter rules are detected, fix README's "What gets indexed" section before proceeding.
+
+---
+
+### Step 4 — Dry run (always run before publishing)
 
 ```bash
 npm publish --dry-run 2>&1
@@ -60,7 +119,7 @@ If unexpected files appear, stop and ask the user to review `.npmignore` and the
 
 ---
 
-### Step 4 — Local smoke test
+### Step 5 — Local smoke test
 
 Pack the tarball and install it into a temporary directory to verify the package works end-to-end before publishing.
 
@@ -110,7 +169,7 @@ rm -rf /tmp/sf-release-test && rm -f yya007-skill-finder-*.tgz
 
 ---
 
-### Step 5 — Bump version
+### Step 6 — Bump version
 
 ```bash
 npm version <patch|minor|major> --no-git-tag-version
@@ -120,7 +179,7 @@ Use the bump type from Step 2. Report the new version (e.g. `0.1.0 → 0.1.1`).
 
 ---
 
-### Step 6 — Publish
+### Step 7 — Publish
 
 ```bash
 npm publish --access public
@@ -134,7 +193,7 @@ On success, report:
 
 ---
 
-### Step 7 — Commit and tag
+### Step 8 — Commit and tag
 
 ```bash
 git add package.json
@@ -152,7 +211,7 @@ git push && git push --tags
 
 ---
 
-### Step 8 — Report
+### Step 9 — Report
 
 Summarise:
 - Package name and new version
