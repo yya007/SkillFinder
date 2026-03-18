@@ -2,7 +2,7 @@
 
 # SkillFinder
 
-**Find the right agent skill in seconds — 33,000+ indexed, runs entirely local.**
+**Find the right agent skill in seconds — local search, no API needed.**
 
 [![npm](https://img.shields.io/npm/v/@yya007/skill-finder?label=npm&color=cb3837)](https://www.npmjs.com/package/@yya007/skill-finder)
 [![Stars](https://img.shields.io/github/stars/yya007/SkillFinder?style=social)](https://github.com/yya007/SkillFinder)
@@ -14,7 +14,8 @@
 SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
-You: find a skill for deploying kubernetes clusters
+You: /skill-finder
+You: deploy kubernetes clusters with rollback
 
 Agent: Found 3 skills for "deploying kubernetes clusters":
 
@@ -32,6 +33,9 @@ Agent: Found 3 skills for "deploying kubernetes clusters":
 
 Want me to fetch the full SKILL.md for any of these before you install?
 ```
+
+Or just describe what you need — the skill also triggers automatically from natural language:
+_"find a skill for deploying kubernetes clusters"_, _"is there a skill for SQL migrations"_, etc.
 
 ---
 
@@ -312,6 +316,8 @@ pytest tests/quality/ -v -m quality
 | 5k+ | 5,108 | ███░░░░░░░░░░░░░░░░░ 15% |
 | **Total** | **33,827** | |
 <!-- stats:index-distribution:end -->
+
+> **Not shown:** skills with 0–9 stars that are not listed in a curated registry (ClawHub, SkillHub, or the Anthropic marketplace) are dropped from the index. Skills from curated registries are kept regardless of star count.
 
 ---
 
