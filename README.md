@@ -11,7 +11,7 @@
 
 </div>
 
-SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
+SkillFinder searches <!-- stats:skill-count:start -->37,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
 You: /skill-finder deploy kubernetes clusters with rollback
@@ -258,10 +258,16 @@ Merges all raw sources, deduplicates by canonical repo URL, applies quality filt
 ### Step 3 — Embed
 
 ```bash
-python pipeline/embed.py
+python pipeline/embed.py \
+  --cache-embeddings data/embeddings.npy \
+  --cache-ordered data/unified_skills_ordered.jsonl \
+  --progress-file data/embed_progress.jsonl
 ```
 
 Calls local Ollama (`qwen3-embedding:0.6b`) to embed all skills. Writes `data/embeddings.npy`.
+
+- `--cache-embeddings` / `--cache-ordered`: reuse vectors from a previous run — only new or changed skills are sent to Ollama. Omit on a fresh build.
+- `--progress-file`: write a per-batch recovery file so a crash mid-run can be resumed by re-running the same command. Deleted automatically on success.
 
 ### Step 4 — Build FAISS index
 
@@ -295,12 +301,12 @@ pytest tests/quality/ -v -m quality
 <!-- stats:coverage-table:start -->
 | Registry | Crawler | Skills in index |
 |----------|---------|----------------:|
-| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 386 |
-| ClawHub / OpenClaw | `clawhub_crawler.py` | 4,605 |
-| SkillHub | `skillhub_crawler.py` | 4,421 |
-| Anthropic official marketplace | `marketplace_crawler.py` | 28,185 |
-| GitHub topics | `topic_crawler.py` | 0 |
-| **Total (after dedup)** | | **33,827** |
+| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 387 |
+| ClawHub / OpenClaw | `clawhub_crawler.py` | 4,610 |
+| SkillHub | `skillhub_crawler.py` | 7,615 |
+| Anthropic official marketplace | `marketplace_crawler.py` | 28,240 |
+| GitHub topics | `topic_crawler.py` | 15,351 |
+| **Total (after dedup)** | | **37,962** |
 <!-- stats:coverage-table:end -->
 
 ## Star Distribution
@@ -308,13 +314,13 @@ pytest tests/quality/ -v -m quality
 <!-- stats:index-distribution:start -->
 | Stars | Skills | Distribution |
 |-------|-------:|:-------------|
-| 10–49 | 1,956 | █░░░░░░░░░░░░░░░░░░░ 6% |
-| 50–99 | 1,254 | █░░░░░░░░░░░░░░░░░░░ 4% |
-| 100–499 | 15,824 | █████████░░░░░░░░░░░ 47% |
-| 500–999 | 970 | █░░░░░░░░░░░░░░░░░░░ 3% |
-| 1k–5k | 8,715 | █████░░░░░░░░░░░░░░░ 26% |
-| 5k+ | 5,108 | ███░░░░░░░░░░░░░░░░░ 15% |
-| **Total** | **33,827** | |
+| 10–49 | 4,135 | ██░░░░░░░░░░░░░░░░░░ 11% |
+| 50–99 | 1,847 | █░░░░░░░░░░░░░░░░░░░ 5% |
+| 100–499 | 16,231 | █████████░░░░░░░░░░░ 43% |
+| 500–999 | 1,144 | █░░░░░░░░░░░░░░░░░░░ 3% |
+| 1k–5k | 9,169 | █████░░░░░░░░░░░░░░░ 24% |
+| 5k+ | 5,436 | ███░░░░░░░░░░░░░░░░░ 14% |
+| **Total** | **37,962** | |
 <!-- stats:index-distribution:end -->
 
 > **Not shown:** skills with 0–9 stars are dropped from the index regardless of which registry they come from. A non-empty description is also required.
