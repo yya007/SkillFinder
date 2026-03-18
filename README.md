@@ -183,10 +183,9 @@ python scripts/search.py "ci/cd pipeline" --min_stars 50
 
 # Human-readable output instead of JSON
 python scripts/search.py "pptx presentation" --no-json --propose 5
-
-# Fetch a specific skill's full SKILL.md before installing
-python scripts/fetch_skill.py --repo https://github.com/user/k8s-deployer
 ```
+
+> **Developer tools** (`fetch_skill.py`, `update_index.py`) are not included in the npm package — they are available in the [git repo](https://github.com/yya007/SkillFinder) for contributors and operators rebuilding the index.
 
 The `--platform` flag is optional and accepts: `claude_code`, `openclaw`, `codex`.
 
@@ -329,7 +328,7 @@ pytest tests/quality/ -v -m quality
 
 ## How it works
 
-1. **Weekly CI pipeline** (GitHub Actions): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → commits the updated index to the repo and publishes a GitHub Release artifact for users who want to pull updates manually via `update_index.py`.
+1. **Weekly CI pipeline** (GitHub Actions): crawls all registries → deduplicates → embeds with Qwen3-Embedding-0.6B via Ollama → builds FAISS index → commits the updated index to the repo as a weekly data release.
 
 2. **Runtime** (your machine): query is embedded locally via Ollama → FAISS nearest-neighbor search (< 200 ms on CPU) → candidate pool returned to the agent → agent reranks and presents the best matches.
 
