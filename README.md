@@ -14,8 +14,7 @@
 SkillFinder searches <!-- stats:skill-count:start -->33,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
-You: /skill-finder
-You: deploy kubernetes clusters with rollback
+You: /skill-finder deploy kubernetes clusters with rollback
 
 Agent: Found 3 skills for "deploying kubernetes clusters":
 
@@ -51,30 +50,33 @@ $ # Google: "kubernetes deploy claude code skill"
 → No quality signals: is this repo maintained? 5 stars or 5,000?
 → No install commands visible in results
 → GitHub code search requires login; finds files, not skills as units
-→ 20–30 minutes to find 3 relevant options — if they exist at all
+→ May take 20–30 minutes to find 3 relevant options — if they exist at all
 ```
 
 **SkillFinder:**
 
 ```
-$ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
+You: /skill-finder deploy kubernetes clusters with rollback
 
-[!] NOTE: Skills are third-party code. Always review before installing.
+Agent: Found 3 skills for "deploying kubernetes clusters":
 
 1. k8s-deployer  ⭐ 142
    Deploy and manage Kubernetes clusters with rollbacks and blue-green deploys.
-   https://github.com/user/k8s-deployer
-   [claude_code] /plugin install k8s-deployer
+   Install: /plugin install k8s-deployer
 
 2. helm-chart-manager  ⭐ 89
    Manage Helm chart lifecycle: install, upgrade, diff, and rollback.
-   https://github.com/user/helm-chart-manager
-   [claude_code] /plugin install helm-chart-manager
+   Install: /plugin install helm-chart-manager
 
 3. terraform-k8s  ⭐ 61
    Provision Kubernetes infrastructure on AWS/GCP/Azure via Terraform.
-   https://github.com/user/terraform-k8s
-   [claude_code] /plugin install terraform-k8s
+   Install: /plugin install terraform-k8s
+```
+
+Or query the index directly from the CLI:
+
+```bash
+$ python scripts/search.py "deploy kubernetes clusters" --no-json --propose 5
 ```
 
 Results in **< 200 ms**, ranked by semantic relevance and community trust, install commands included.
@@ -90,12 +92,15 @@ Results in **< 200 ms**, ranked by semantic relevance and community trust, insta
 
 ### Install
 
-> **Quick start:**
-> 1. `npm install -g @yya007/skill-finder`
-> 2. Copy to your agent's skills directory (see table below)
-> 3. `pip install -r scripts/requirements.txt && ollama pull qwen3-embedding:0.6b`
+**Option 1 — npx (easiest, auto-detects your agent):**
 
-**Recommended (npm):**
+```bash
+npx skills add yya007/SkillFinder
+```
+
+Uses the [`skills`](https://skills.sh) CLI — detects which agents you have installed and copies files to the right directory automatically.
+
+**Option 2 — npm:**
 
 ```bash
 npm install -g @yya007/skill-finder
@@ -122,9 +127,7 @@ pip install -r scripts/requirements.txt
 ollama pull qwen3-embedding:0.6b
 ```
 
-That's it. Ask your agent: _"find a skill for X"_
-
-> **Optional:** run `python scripts/update_index.py` to pull the latest weekly index if your clone is more than a week old.
+That's it. Ask your agent: _"find a skill for X"_ or invoke the skill explicitly  _"/skill-finder"_
 
 > **OpenClaw:** ClawHub listing coming soon. Until then, install via npm or
 > `git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder`.
