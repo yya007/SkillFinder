@@ -59,8 +59,6 @@ def _run_crawler(
     ]
     if token:
         cmd += ["--token", token]
-    if source == "topic":
-        cmd += ["--data-dir", str(output_dir)]
     if extra_args:
         cmd += extra_args
 
