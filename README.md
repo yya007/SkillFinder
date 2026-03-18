@@ -194,18 +194,15 @@ The `--platform` flag is optional and accepts: `claude_code`, `openclaw`, `codex
 
 ## What gets indexed (and what gets filtered out)
 
-SkillFinder indexes skills from four registries: **SkillsMP** (GitHub code search), **ClawHub/OpenClaw** (awesome list + org/topic search), **SkillHub** (web scrape), and the **Anthropic official marketplace**. A fifth crawler discovers repos via GitHub topic tags (`claude-skill`, `codex-skill`, `agent-skill`, etc.).
+SkillFinder indexes skills from five sources: **SkillsMP** (GitHub code search), **ClawHub/OpenClaw** (awesome list + org/topic search), **SkillHub** (web scrape), the **Anthropic official marketplace**, and **GitHub topic tags** (`claude-skill`, `codex-skill`, `agent-skill`, etc.).
 
-Skills are **kept** if they meet any of the following:
+A skill is **kept** if it passes both of the following:
+- Has a non-empty description (from SKILL.md frontmatter or README)
 - ≥ 10 GitHub stars
-- Listed in a curated registry (ClawHub, SkillHub, official marketplace)
-- SkillHub rank S or A
 
-Skills are **dropped** if:
-- No description (after checking SKILL.md frontmatter and README)
-- Zero stars and not in any curated registry and no SkillHub rating
+A skill is **dropped** if either condition is missing — registry membership and SkillHub ratings do not override the star threshold.
 
-Safety: ClawHub records carry a `safety_scan` result from VirusTotal. SkillsMP and SkillHub records do not. Always review a skill's repository before installing it.
+Safety: ClawHub records carry a `safety_scan` result from VirusTotal. Other sources do not. Always review a skill's repository before installing it.
 
 ---
 
@@ -320,7 +317,7 @@ pytest tests/quality/ -v -m quality
 | **Total** | **33,827** | |
 <!-- stats:index-distribution:end -->
 
-> **Not shown:** skills with 0–9 stars that are not listed in a curated registry (ClawHub, SkillHub, or the Anthropic marketplace) are dropped from the index. Skills from curated registries are kept regardless of star count.
+> **Not shown:** skills with 0–9 stars are dropped from the index regardless of which registry they come from. A non-empty description is also required.
 
 ---
 
