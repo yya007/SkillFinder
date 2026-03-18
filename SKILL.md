@@ -18,7 +18,7 @@ metadata:
     requires:
       bins: [ollama, python3]
       env: []
-    note: "Run `ollama pull qwen3-embedding:0.6b && python scripts/update_index.py` after install."
+    note: "Run `pip install -r scripts/requirements.txt && ollama pull qwen3-embedding:0.6b` after install."
 ---
 
 # skill-finder

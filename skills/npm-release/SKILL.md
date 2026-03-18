@@ -110,7 +110,8 @@ npm publish --dry-run 2>&1
 ```
 
 Show the user the list of files that would be included. Confirm:
-- `scripts/search.py`, `scripts/update_index.py`, `scripts/fetch_skill.py`, `scripts/requirements.txt`, `scripts/__init__.py` are present.
+- `scripts/search.py`, `scripts/requirements.txt`, `scripts/__init__.py` are present.
+- `scripts/fetch_skill.py` and `scripts/update_index.py` are **not** present (developer-only tools, excluded from the npm package — available in the git repo).
 - `data/index.faiss`, `data/metadata.jsonl`, `data/version.txt` are present.
 - `SKILL.md` and `plugin.json` are present.
 - No `crawlers/`, `pipeline/`, `tests/`, `docs/`, `__pycache__/`, or `.sh` files appear.
