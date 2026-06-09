@@ -1,8 +1,11 @@
 """Tests for crawlers/base.py."""
 import base64
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 from crawlers.base import (
@@ -711,3 +714,95 @@ class TestFetchSkillMd:
         # main should appear only once, master also once
         assert call_refs.count("main") == 1
         assert call_refs.count("master") == 1
+
+
+# ---------------------------------------------------------------------------
+# TestGithubGetRateLimit
+# ---------------------------------------------------------------------------
+
+def _mk_response(status_code, headers=None, text="", json_body=None):
+    """Build a MagicMock standing in for a requests.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = headers or {}
+    resp.text = text
+    resp.url = "https://api.github.com/test"
+    resp.json.return_value = json_body if json_body is not None else {}
+    return resp
+
+
+class TestGithubGetRateLimit:
+    """github_get() must never hang on a persistent rate limit (the CI bug)."""
+
+    def test_bounds_retries_on_persistent_429(self):
+        """A session that always returns 429 must raise, not loop forever."""
+        from crawlers.base import github_get, _MAX_RATELIMIT_RETRIES
+
+        # 429 with a tiny Retry-After and a near-now reset — the conditions
+        # GitHub's secondary (abuse) rate limit produces.
+        always_429 = _mk_response(
+            429, headers={"Retry-After": "0", "X-RateLimit-Remaining": "100"}
+        )
+        mock_session = MagicMock()
+        mock_session.get.return_value = always_429
+
+        with patch("crawlers.base.time.sleep"):  # don't actually sleep
+            with pytest.raises(RuntimeError):
+                github_get(mock_session, "https://api.github.com/test")
+
+        # Bounded: at most the initial GET + _MAX_RATELIMIT_RETRIES retries.
+        assert mock_session.get.call_count <= _MAX_RATELIMIT_RETRIES + 1
+
+    def test_recovers_when_429_clears(self):
+        """If the limit clears after a few 429s, github_get returns the body."""
+        from crawlers.base import github_get
+
+        responses = [
+            _mk_response(429, headers={"Retry-After": "0"}),
+            _mk_response(429, headers={"Retry-After": "0"}),
+            _mk_response(200, headers={"X-RateLimit-Remaining": "100"},
+                         json_body={"ok": True}),
+        ]
+        mock_session = MagicMock()
+        mock_session.get.side_effect = responses
+
+        with patch("crawlers.base.time.sleep"):
+            result = github_get(mock_session, "https://api.github.com/test")
+
+        assert result == {"ok": True}
+
+    def test_retry_after_takes_precedence_over_reset(self):
+        """Secondary limits are signalled by Retry-After, not X-RateLimit-Reset."""
+        from crawlers.base import _rate_limit_wait_seconds
+
+        # Reset is far in the future, but Retry-After says 3s — honor Retry-After.
+        resp = _mk_response(
+            429,
+            headers={
+                "Retry-After": "3",
+                "X-RateLimit-Reset": str(int(time.time()) + 3600),
+            },
+        )
+        wait = _rate_limit_wait_seconds(resp)
+        assert 3 <= wait <= 6  # ~3s (+ small safety margin), NOT ~3600s
+
+    def test_wait_is_capped(self):
+        """An absurd Retry-After must be capped, not honored literally."""
+        from crawlers.base import _rate_limit_wait_seconds, _MAX_WAIT_SECONDS
+
+        resp = _mk_response(429, headers={"Retry-After": "99999"})
+        assert _rate_limit_wait_seconds(resp) <= _MAX_WAIT_SECONDS
+
+    def test_falls_back_to_reset_without_retry_after(self):
+        """Without Retry-After, use X-RateLimit-Reset (primary quota)."""
+        from crawlers.base import _rate_limit_wait_seconds
+
+        resp = _mk_response(
+            403,
+            headers={
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(time.time()) + 10),
+            },
+        )
+        wait = _rate_limit_wait_seconds(resp)
+        assert 10 <= wait <= 20
