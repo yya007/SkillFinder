@@ -53,6 +53,18 @@ _USER_AGENT = "SkillFinder-Crawler/1.0 (+https://github.com/skillfinder/skillfin
 # Exponential backoff delays (seconds): attempt 1→1s, 2→4s, 3→16s
 _BACKOFF_DELAYS = (1, 4, 16)
 
+# Maximum number of consecutive rate-limit retries for a single request before
+# giving up.  Without this bound a persistent 429 (GitHub's secondary/abuse
+# rate limit, which several parallel crawlers sharing one token trip easily in
+# CI) loops forever — the original cause of the 90-minute CI hang.
+_MAX_RATELIMIT_RETRIES = 5
+
+# Hard ceiling on any single rate-limit cooldown.  Secondary limits clear in
+# seconds-to-a-minute and the search-API window resets every 60s, so a wait
+# longer than this means a stale or far-future reset header — cap it so one
+# request can't stall a crawler (and, in CI, the whole job) for ~an hour.
+_MAX_WAIT_SECONDS = 120
+
 
 # ---------------------------------------------------------------------------
 # Session factory
@@ -154,24 +166,35 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             logger.debug("ETag 304 for %s: not modified", url)
             return None
 
-        # Rate-limit responses (429/403 with quota exhausted): sleep until reset
-        # and retry immediately without consuming a backoff attempt slot.
+        # Rate-limit responses (429 always; 403 only when primary quota is
+        # exhausted): wait — honoring Retry-After for secondary/abuse limits,
+        # else X-RateLimit-Reset — then retry. The loop is BOUNDED: a
+        # persistently throttled request raises after _MAX_RATELIMIT_RETRIES
+        # so it can never hang the crawler (or the CI job) indefinitely.
+        rl_retries = 0
         while resp.status_code in (429, 403):
             remaining = int(resp.headers.get("X-RateLimit-Remaining", "1"))
-            if remaining == 0 or resp.status_code == 429:
-                _wait_for_reset(resp, label=url)
-                try:
-                    resp = session.get(url, params=params, timeout=timeout, headers=extra_headers)
-                except requests.RequestException as exc:
-                    last_exc = exc
-                    break
-            else:
+            if resp.status_code == 403 and remaining > 0:
                 # 403 with quota remaining = permanent error (private repo,
                 # bad token, org restriction). Raise immediately — no point
-                # burning backoff retries on a definitive access denial.
+                # burning retries on a definitive access denial.
                 raise RuntimeError(
                     f"Permanent 403 from {url}: {resp.text[:200]}"
                 )
+
+            if rl_retries >= _MAX_RATELIMIT_RETRIES:
+                raise RuntimeError(
+                    f"Rate limited on {url} after {rl_retries} retries "
+                    f"(HTTP {resp.status_code}); giving up to avoid hanging"
+                )
+
+            _wait_for_reset(resp, label=url)
+            rl_retries += 1
+            try:
+                resp = session.get(url, params=params, timeout=timeout, headers=extra_headers)
+            except requests.RequestException as exc:
+                last_exc = exc
+                break
 
         if resp.status_code == 200:
             # Proactive check: if remaining quota is critically low, sleep
@@ -205,19 +228,49 @@ def _maybe_wait_for_reset(resp: requests.Response) -> None:
         _wait_for_reset(resp, label=resp.url)
 
 
-def _wait_for_reset(resp: requests.Response, label: str = "") -> None:
-    """Sleep until X-RateLimit-Reset (plus safety margin), printing an ETA countdown."""
-    import sys
+def _rate_limit_wait_seconds(resp: requests.Response) -> float:
+    """Compute how long to wait before retrying a rate-limited request.
+
+    Precedence:
+      1. ``Retry-After`` (seconds or HTTP-date) — authoritative for GitHub's
+         secondary/abuse rate limits, which do NOT move X-RateLimit-Reset.
+      2. ``X-RateLimit-Reset`` (epoch seconds) — primary quota window.
+      3. A 60s default.
+
+    The result is always clamped to ``_MAX_WAIT_SECONDS`` so a stale or
+    far-future header can't stall a crawler for a long time.
+    """
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        # Delta-seconds form.
+        try:
+            return min(int(retry_after) + 1, _MAX_WAIT_SECONDS)
+        except ValueError:
+            # HTTP-date form (e.g. "Wed, 21 Oct 2026 07:28:00 GMT").
+            try:
+                from email.utils import parsedate_to_datetime
+
+                dt = parsedate_to_datetime(retry_after)
+                secs = dt.timestamp() - time.time()
+                return min(max(0.0, secs) + 1, _MAX_WAIT_SECONDS)
+            except (TypeError, ValueError):
+                pass
 
     reset_str = resp.headers.get("X-RateLimit-Reset")
     if reset_str:
         try:
-            reset_ts = int(reset_str)
-            wait = max(0, reset_ts - time.time()) + 5
+            return min(max(0.0, int(reset_str) - time.time()) + 5, _MAX_WAIT_SECONDS)
         except ValueError:
-            wait = 60.0
-    else:
-        wait = 60.0
+            pass
+
+    return min(60.0, _MAX_WAIT_SECONDS)
+
+
+def _wait_for_reset(resp: requests.Response, label: str = "") -> None:
+    """Sleep for the computed rate-limit cooldown, printing an ETA countdown."""
+    import sys
+
+    wait = _rate_limit_wait_seconds(resp)
 
     logger.info("Rate limit hit (%s); waiting %.0fs until reset", label, wait)
 

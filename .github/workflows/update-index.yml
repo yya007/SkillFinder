@@ -13,7 +13,11 @@ on:
 jobs:
   build-index:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A full rebuild (the only option above ~30k skills — incremental requires
+    # an IVF-incompatible flat index) embeds the entire corpus via Ollama on a
+    # 2-core runner, which alone can take 2+ hours on top of the crawl. The old
+    # 90-minute cap killed every run mid-crawl. GitHub's hard ceiling is 360.
+    timeout-minutes: 300
     permissions:
       contents: write   # needed to publish GitHub Releases
 
@@ -29,16 +33,23 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       # ── Phase 1: Crawl all registries in parallel ─────────────────────────
+      # Each crawler is wrapped in `timeout` and `|| echo` so a single hung or
+      # failing source can never stall `wait` (the cause of the 90-min CI
+      # hangs) — the pipeline proceeds with whatever data was written, and the
+      # post-crawl quality gate (≥ 8,000 skills) catches a wholesale failure.
       - name: Crawl all sources (parallel)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p data/raw
-          python -m crawlers.skillsmp_crawler   -o data/raw/skillsmp.jsonl   &
-          python -m crawlers.clawhub_crawler    -o data/raw/clawhub.jsonl    &
-          python -m crawlers.skillhub_crawler   -o data/raw/skillhub.jsonl   &
-          python -m crawlers.marketplace_crawler -o data/raw/marketplace.jsonl &
+          timeout 45m python -m crawlers.skillsmp_crawler    -o data/raw/skillsmp.jsonl    || echo "::warning::skillsmp crawler exited $?" &
+          timeout 45m python -m crawlers.clawhub_crawler     -o data/raw/clawhub.jsonl     || echo "::warning::clawhub crawler exited $?" &
+          timeout 45m python -m crawlers.skillhub_crawler    -o data/raw/skillhub.jsonl    || echo "::warning::skillhub crawler exited $?" &
+          timeout 45m python -m crawlers.marketplace_crawler -o data/raw/marketplace.jsonl || echo "::warning::marketplace crawler exited $?" &
+          timeout 45m python -m crawlers.topic_crawler       -o data/raw/topic.jsonl --data-dir data/raw || echo "::warning::topic crawler exited $?" &
           wait
+          echo "Crawl record counts:"
+          for f in data/raw/*.jsonl; do echo "  $(wc -l < "$f") $(basename "$f")"; done
 
       # ── Phase 2: Normalize and deduplicate ────────────────────────────────
       - name: Normalize and deduplicate
@@ -46,6 +57,7 @@ jobs:
           python pipeline/normalize.py \
             data/raw/skillsmp.jsonl data/raw/clawhub.jsonl \
             data/raw/skillhub.jsonl data/raw/marketplace.jsonl \
+            data/raw/topic.jsonl \
             -o data/unified_skills.jsonl
 
       # ── Phase 3: Pre-embed quality gate ───────────────────────────────────
