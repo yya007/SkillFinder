@@ -917,6 +917,39 @@ class TestApiCounters:
         fetch_repo_metadata_with_etag(session, "a/b", None)
         assert get_api_counters()["rest"] == 1
 
+    def test_fetch_repo_metadata_with_etag_retries_on_429(self):
+        """fetch_repo_metadata_with_etag must honor rate limits: on 429 it waits
+        and retries, ultimately returning the 200 metadata (regression: the old
+        single-attempt path returned {} on 429 without retrying)."""
+        from crawlers.base import fetch_repo_metadata_with_etag
+
+        resp429 = MagicMock()
+        resp429.status_code = 429
+        resp429.headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "0"}
+
+        resp200 = MagicMock()
+        resp200.status_code = 200
+        resp200.headers = {"ETag": 'W/"v"'}
+        resp200.json.return_value = {
+            "stargazers_count": 5, "pushed_at": "", "topics": [],
+            "description": "", "default_branch": "main",
+        }
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = [resp429, resp200]
+
+        with patch("crawlers.base._wait_for_reset"):  # no-op — no real sleep
+            meta, new_etag = fetch_repo_metadata_with_etag(mock_session, "a/b")
+
+        assert meta["stargazers_count"] == 5, (
+            "Expected successful 200 metadata; got {} — rate-limit retry not implemented"
+        )
+        assert new_etag == 'W/"v"'
+        assert mock_session.get.call_count == 2, (
+            "Expected 2 GET calls (1 retry after 429); got "
+            f"{mock_session.get.call_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestMetaCacheIO

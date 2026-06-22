@@ -749,13 +749,30 @@ def fetch_repo_metadata_with_etag(
     if etag:
         headers["If-None-Match"] = etag
 
-    try:
-        resp = session.get(url, headers=headers, timeout=30)
-    except requests.RequestException as exc:
-        logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
-        return {}, None
+    rl_retries = 0
+    while True:
+        try:
+            resp = session.get(url, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
+            return {}, None
 
-    record_request(url, resp.status_code)
+        record_request(url, resp.status_code)
+
+        # Honor rate limits like github_get: wait for reset and retry on 429 or
+        # quota-exhausted 403, bounded by _MAX_RATELIMIT_RETRIES. A 403 with
+        # quota remaining is a permanent error (private/forbidden), not a throttle.
+        if resp.status_code in (429, 403):
+            remaining = int(resp.headers.get("X-RateLimit-Remaining", "1"))
+            if resp.status_code == 403 and remaining > 0:
+                break
+            if rl_retries >= _MAX_RATELIMIT_RETRIES:
+                break
+            _wait_for_reset(resp, label=url)
+            rl_retries += 1
+            continue
+        break
+
     new_etag = resp.headers.get("ETag")
 
     if resp.status_code == 304:
