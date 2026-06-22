@@ -883,3 +883,22 @@ class TestApiCounters:
         record_request("https://api.github.com/repos/a/b", 200)
         reset_api_counters()
         assert get_api_counters()["rest"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestMetaCacheIO
+# ---------------------------------------------------------------------------
+
+class TestMetaCacheIO:
+    def test_roundtrip(self, tmp_path):
+        from crawlers.base import load_meta_cache, save_meta_cache
+        p = str(tmp_path / "repo_meta_cache.json")
+        cache = {"a/b": {"etag": "W/\"x\"", "pushed_at": "2026-01-01T00:00:00Z",
+                          "stargazers_count": 10, "topics": [], "description": "",
+                          "default_branch": "main"}}
+        save_meta_cache(cache, p)
+        assert load_meta_cache(p) == cache
+
+    def test_missing_file_returns_empty_dict(self, tmp_path):
+        from crawlers.base import load_meta_cache
+        assert load_meta_cache(str(tmp_path / "nope.json")) == {}

@@ -666,6 +666,31 @@ def add_to_filter_cache(path: str, repo_url: str, reason: str) -> None:
 # GitHub repo metadata
 # ---------------------------------------------------------------------------
 
+def load_meta_cache(path: str) -> dict:
+    """Load the persistent repo-metadata/ETag cache, or {} if absent/corrupt."""
+    import pathlib
+    p = pathlib.Path(path)
+    if not p.exists():
+        return {}
+    try:
+        with p.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_meta_cache(cache: dict, path: str) -> None:
+    """Persist the repo-metadata/ETag cache atomically."""
+    import pathlib
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(cache, fh, ensure_ascii=False)
+    tmp.replace(p)
+
+
 def fetch_repo_metadata(session, repo_full_name: str) -> dict:
     """Fetch metadata for a single repo from the GitHub Repos API.
 
