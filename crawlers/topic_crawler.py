@@ -35,14 +35,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from crawlers.base import (
     GITHUB_API,
     add_to_filter_cache,
-    fetch_repo_metadata,
-    fetch_skill_md,
+    fetch_repo_metadata_cached,
+    fetch_skill_md_cached,
     find_skill_md_paths,
     github_get,
     infer_platforms,
+    load_content_cache,
     load_filter_cache,
+    load_meta_cache,
     make_session,
     parse_frontmatter,
+    save_content_cache,
+    save_meta_cache,
     write_jsonl,
 )
 
@@ -214,6 +218,10 @@ def run(
 
     session = make_session(token=token)
 
+    # Load ETag metadata cache and blob-SHA content cache
+    meta_cache = load_meta_cache("data/crawl_state/repo_meta_cache.json")
+    content_cache = load_content_cache("data/crawl_state/content_cache.json")
+
     # Load filter cache (repos known to have no SKILL.md)
     filter_cache: set[str] = set()
     if filter_cache_path:
@@ -277,7 +285,7 @@ def run(
         # Fetch metadata + SKILL.md paths
         if full_name not in _repo_cache:
             try:
-                meta = fetch_repo_metadata(session, full_name)
+                meta = fetch_repo_metadata_cached(session, full_name, meta_cache)
             except RuntimeError as exc:
                 log.warning("Could not fetch metadata for %s: %s", full_name, exc)
                 continue
@@ -318,8 +326,13 @@ def run(
 
             # Fetch SKILL.md for name/description/platform detection
             fm: dict = {}
-            skill_content = fetch_skill_md(
-                session, full_name, path=skill_path, default_branch=default_branch
+            skill_content = fetch_skill_md_cached(
+                session,
+                full_name,
+                skill_path,
+                skill_md_paths[skill_path],
+                default_branch,
+                content_cache,
             )
             if skill_content:
                 fm = parse_frontmatter(skill_content)
@@ -344,6 +357,9 @@ def run(
                 },
             }
             records.append(record)
+
+    save_meta_cache(meta_cache, "data/crawl_state/repo_meta_cache.json")
+    save_content_cache(content_cache, "data/crawl_state/content_cache.json")
 
     written = write_jsonl(records, output_path, append=resume)
     log.info("Topic crawler done: %d records written to %s", written, output_path)
