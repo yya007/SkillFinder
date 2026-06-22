@@ -19,6 +19,7 @@ env/
 data/raw/
 data/embeddings.npy
 data/*.jsonl
+!data/release_log.jsonl
 data/trial/
 data/logs/
 

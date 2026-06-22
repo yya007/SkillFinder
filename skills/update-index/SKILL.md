@@ -131,7 +131,22 @@ python pipeline/update_docs.py
 
 ---
 
-### Step 7 — Report
+### Step 7 — Update the release log
+
+Append this build's stats (date, skill count, per-source breakdown) to the
+release-history log. Idempotent — re-running for the same date updates that row.
+
+```bash
+python pipeline/update_release_log.py
+```
+
+This updates `data/release_log.jsonl` (canonical) and `docs/release-log.md`
+(human-readable table). Commit them alongside `data/index.faiss`,
+`data/metadata.jsonl`, and `data/version.txt`.
+
+---
+
+### Step 8 — Report
 
 Read `data/version.txt` and report:
 - New skill count

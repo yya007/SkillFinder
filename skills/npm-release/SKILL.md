@@ -194,10 +194,19 @@ On success, report:
 
 ---
 
-### Step 8 — Commit and tag
+### Step 8 — Stamp the npm version on the release log, then commit and tag
+
+Record the published npm version against the current index release in the
+release-history log (idempotent; keyed by `data/version.txt` date):
 
 ```bash
-git add package.json
+python pipeline/update_release_log.py --npm-version <new-version>
+```
+
+Then commit the bump + the log update and tag:
+
+```bash
+git add package.json data/release_log.jsonl docs/release-log.md
 git commit -m "chore: bump npm version to <new-version>"
 git tag v<new-version>
 ```
