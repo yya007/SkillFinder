@@ -87,6 +87,7 @@ class TestTopicCrawlerRun:
     def _patch_run(self):
         return (
             patch("crawlers.topic_crawler._discover_topic_repos"),
+            patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}),
             patch("crawlers.topic_crawler.fetch_repo_metadata_cached"),
             patch("crawlers.topic_crawler.find_skill_md_paths_cached"),
             patch("crawlers.topic_crawler.fetch_skill_md_cached"),
@@ -102,6 +103,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}) as mock_batch, \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -127,6 +129,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -154,6 +157,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -180,6 +184,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -205,6 +210,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -238,6 +244,7 @@ class TestTopicCrawlerRun:
         )
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -275,6 +282,7 @@ class TestTopicCrawlerRun:
         )
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -299,6 +307,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -327,6 +336,7 @@ class TestTopicCrawlerRun:
 
         calls = {"saved_meta": 0, "saved_content": 0, "saved_tree": 0}
 
+        monkeypatch.setattr(tc, "fetch_repo_metadata_batch", lambda s, names: {})
         monkeypatch.setattr(tc, "load_meta_cache", lambda p: {})
         monkeypatch.setattr(tc, "load_content_cache", lambda p: {})
         monkeypatch.setattr(tc, "load_tree_cache", lambda p: {})
@@ -424,6 +434,7 @@ class TestDiscoverPushedFilter:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -457,3 +468,57 @@ class TestDiscoverPushedFilter:
         saved_state = mock_save_state.call_args.args[0]
         assert "last_discovery_at" in saved_state
         assert saved_state["last_discovery_at"]  # non-empty timestamp
+
+
+# ---------------------------------------------------------------------------
+# TestTopicCrawlerBatchMetaIntegration
+# ---------------------------------------------------------------------------
+
+class TestTopicCrawlerBatchMetaIntegration:
+    """Verify that batch GraphQL metadata is used (and REST is skipped) when available."""
+
+    def test_batch_result_used_and_rest_not_called(self, tmp_path):
+        """When fetch_repo_metadata_batch returns metadata for a repo, the per-repo
+        fetch_repo_metadata_cached should NOT be called for that repo."""
+        from crawlers.topic_crawler import run
+
+        batch_meta = {
+            "user/skill-a": {
+                "stargazers_count": 99,
+                "pushed_at": "2026-05-01T00:00:00Z",
+                "description": "from graphql",
+                "default_branch": "main",
+                "topics": ["graphql"],
+            }
+        }
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch",
+                   return_value=batch_meta) as mock_batch, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_rest_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
+
+            mock_disc.return_value = ["user/skill-a"]
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = None
+
+            out = str(tmp_path / "out.jsonl")
+            count = run(out)
+
+        assert count == 1
+        # The batch provided metadata — per-repo REST fallback must NOT have been called
+        mock_rest_meta.assert_not_called()
+
+        # Confirm the record used the batch-sourced star count
+        import json as _json
+        record = _json.loads(Path(out).read_text().strip())
+        assert record["raw_metadata"]["stars"] == 99

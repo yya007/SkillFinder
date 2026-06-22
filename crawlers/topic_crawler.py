@@ -36,6 +36,7 @@ from crawlers.base import (
     GITHUB_API,
     _utc_now_iso,
     add_to_filter_cache,
+    fetch_repo_metadata_batch,
     fetch_repo_metadata_cached,
     fetch_skill_md_cached,
     find_skill_md_paths_cached,
@@ -272,6 +273,11 @@ def run(
     since = crawl_state.get("last_discovery_at") if mode in ("incremental", "discover") else None
     discovered = _discover_topic_repos(session, limit=1000, since=since)
 
+    # Bulk-fetch metadata for all discovered repos via a single GraphQL batch.
+    # Each chunk of ≤100 repos costs one GraphQL POST (separate 5k-point/hr pool).
+    # Repos absent from the result fall back to the per-repo cached REST path below.
+    batch_meta = fetch_repo_metadata_batch(session, discovered)
+
     # Cache (meta, skill_md_paths) per repo to avoid repeated API calls
     _repo_cache: dict[str, tuple[dict, list[str]]] = {}
 
@@ -301,7 +307,10 @@ def run(
         # Fetch metadata + SKILL.md paths
         if full_name not in _repo_cache:
             try:
-                meta = fetch_repo_metadata_cached(session, full_name, meta_cache)
+                # Use GraphQL batch result when available; fall back to per-repo REST
+                meta = batch_meta.get(full_name) or fetch_repo_metadata_cached(
+                    session, full_name, meta_cache
+                )
             except RuntimeError as exc:
                 log.warning("Could not fetch metadata for %s: %s", full_name, exc)
                 continue
