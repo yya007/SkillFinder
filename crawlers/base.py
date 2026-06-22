@@ -9,6 +9,7 @@ Public API:
   fetch_repo_metadata()         - Fetch stars/pushed_at/topics/branch for a repo
   fetch_repo_metadata_with_etag() - ETag-aware version; returns (dict|None, etag|None)
   fetch_repo_metadata_cached()   - Like fetch_repo_metadata_with_etag but with a persistent cache (304 = zero quota)
+  fetch_repo_metadata_batch()   - Batch-fetch metadata for up to 100 repos via GraphQL (one POST per 100)
   fetch_commit_sha()            - Fetch HEAD commit SHA for a repo (one API call)
   find_skill_md_paths()         - Find all SKILL.md paths → {path: blob_sha} dict
   load_filter_cache()           - Load set of filtered-out canonical URLs
@@ -25,6 +26,9 @@ Public API:
   fetch_skill_md_cached()       - Fetch SKILL.md, skipping when blob SHA is cached
   load_content_cache()          - Load persistent blob-SHA -> content cache
   save_content_cache()          - Persist blob-SHA -> content cache
+  find_skill_md_paths_cached()  - Find SKILL.md paths, skipping Trees API when pushed_at is unchanged
+  load_tree_cache()             - Load persistent pushed_at -> {path: sha} tree cache
+  save_tree_cache()             - Persist pushed_at -> {path: sha} tree cache
 """
 
 from __future__ import annotations
@@ -562,6 +566,80 @@ def find_skill_md_paths(session, repo_full_name: str) -> dict[str, str]:
     return paths
 
 
+def find_skill_md_paths_cached(
+    session,
+    repo_full_name: str,
+    pushed_at: str,
+    default_branch: str,
+    tree_cache: dict,
+) -> dict[str, str]:
+    """Return SKILL.md paths for a repo, skipping the Trees API call when unchanged.
+
+    Uses ``(pushed_at, default_branch)`` as the freshness key.  If both match what is
+    stored in ``tree_cache``, the cached ``{path: sha}`` mapping is returned
+    immediately without any API call.  Otherwise ``find_skill_md_paths`` is called and
+    the result is stored back into ``tree_cache`` (mutated in place).
+
+    ``default_branch`` is part of the key because ``find_skill_md_paths`` walks
+    ``git/trees/HEAD`` (the default branch): a default-branch change resolves HEAD to a
+    different tree even when ``pushed_at`` is unchanged, so keying on ``pushed_at``
+    alone would return stale paths/blob SHAs from the old branch.
+
+    An empty or falsy ``pushed_at`` always calls the API and never caches the result
+    because we cannot prove freshness without a timestamp.
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+        pushed_at:      The repo's ``pushed_at`` ISO-8601 string from the metadata API.
+                        Pass ``""`` (or any falsy value) to force a live fetch.
+        default_branch: The repo's current default branch name.
+        tree_cache:     Mutable dict that persists across calls within a crawl run.
+                        Shape: ``{repo: {"pushed_at": str, "default_branch": str, "paths": dict}}``.
+
+    Returns:
+        Dict mapping SKILL.md path → blob SHA (same contract as ``find_skill_md_paths``).
+    """
+    entry = tree_cache.get(repo_full_name, {})
+    if (
+        pushed_at
+        and entry.get("pushed_at") == pushed_at
+        and entry.get("default_branch") == default_branch
+    ):
+        return entry["paths"]
+
+    paths = find_skill_md_paths(session, repo_full_name)
+    # Only cache a NON-empty result. find_skill_md_paths returns {} both for a
+    # repo with no SKILL.md and for a transient Trees/Search API failure; caching
+    # {} under the unchanged pushed_at would pin a repo that actually has skills to
+    # "empty" forever (it never re-fetches until pushed again). Genuinely empty
+    # repos are cheaply re-checked and short-circuited by the crawler's filter cache.
+    if pushed_at and paths:
+        tree_cache[repo_full_name] = {
+            "pushed_at": pushed_at,
+            "default_branch": default_branch,
+            "paths": paths,
+        }
+    return paths
+
+
+def load_tree_cache(path: str) -> dict:
+    """Load the persistent Trees-API path cache, or {} if absent/corrupt.
+
+    Thin alias for ``load_meta_cache`` — same JSON format, different file.
+    Cache shape: ``{repo_full_name: {"pushed_at": str, "paths": {path: sha}}}``.
+    """
+    return load_meta_cache(path)
+
+
+def save_tree_cache(cache: dict, path: str) -> None:
+    """Persist the Trees-API path cache atomically.
+
+    Thin alias for ``save_meta_cache`` — same atomic-write semantics, different file.
+    """
+    save_meta_cache(cache, path)
+
+
 def _find_skill_md_via_search(session, repo_full_name: str) -> dict[str, str]:
     """Find SKILL.md paths via Code Search API, scoped to one repo.
 
@@ -821,6 +899,140 @@ def fetch_repo_metadata_cached(session, repo_full_name: str, cache: dict) -> dic
             "default_branch": meta.get("default_branch", "main"),
         }
     return meta
+
+
+_GRAPHQL_BATCH_SIZE = 100
+
+
+def fetch_repo_metadata_batch(
+    session,
+    repo_full_names: list[str],
+) -> dict[str, dict]:
+    """Batch-fetch metadata for up to 100 repos per request via the GitHub GraphQL API.
+
+    Uses one GraphQL POST per chunk of ≤100 repos (aliased fields), consuming from
+    the separate 5,000-point/hr GraphQL quota rather than the REST quota.
+
+    Args:
+        session:         A requests.Session from make_session() (carries Authorization header).
+        repo_full_names: List of "{owner}/{repo}" strings to fetch.
+
+    Returns:
+        Dict mapping full_name → {stargazers_count, pushed_at, topics, description,
+        default_branch} for every repo that resolved successfully.  Repos that GitHub
+        returns as null (deleted, renamed, private, or otherwise inaccessible) are
+        simply absent from the result — callers should fall back to the per-repo REST
+        path for missing entries.
+
+    Error handling:
+        - network / non-200 / unparseable JSON: logs a warning, skips that chunk.
+        - GraphQL ``errors`` array: resolved aliases in ``data`` are still returned;
+          only the null aliases are omitted.
+    """
+    graphql_url = f"{GITHUB_API}/graphql"
+    result: dict[str, dict] = {}
+
+    # Filter entries that don't have a "/" — they cannot be split into owner/name.
+    valid: list[tuple[int, str, str, str]] = []  # (original_index, alias, owner, name)
+    for i, full_name in enumerate(repo_full_names):
+        if "/" not in full_name:
+            logger.warning("fetch_repo_metadata_batch: skipping malformed entry %r", full_name)
+            continue
+        owner, name = full_name.split("/", 1)
+        valid.append((i, f"r{i}", owner, name))
+
+    # Process in chunks of _GRAPHQL_BATCH_SIZE
+    for chunk_start in range(0, len(valid), _GRAPHQL_BATCH_SIZE):
+        chunk = valid[chunk_start: chunk_start + _GRAPHQL_BATCH_SIZE]
+
+        # Build variable declarations and field aliases for this chunk
+        var_decls: list[str] = []
+        field_aliases: list[str] = []
+        variables: dict[str, str] = {}
+
+        for _orig_idx, alias, owner, name in chunk:
+            var_decls.append(f"${alias}Owner:String! ${alias}Name:String!")
+            field_aliases.append(
+                f"{alias}: repository(owner:${alias}Owner, name:${alias}Name) {{"
+                f" stargazerCount pushedAt description"
+                f" defaultBranchRef {{ name }}"
+                f" repositoryTopics(first:20) {{ nodes {{ topic {{ name }} }} }}"
+                f" }}"
+            )
+            variables[f"{alias}Owner"] = owner
+            variables[f"{alias}Name"] = name
+
+        query = "query(" + " ".join(var_decls) + ") { " + " ".join(field_aliases) + " }"
+
+        try:
+            resp = session.post(
+                graphql_url,
+                json={"query": query, "variables": variables},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            logger.warning(
+                "fetch_repo_metadata_batch: network error on chunk starting at index %d: %s",
+                chunk_start,
+                exc,
+            )
+            continue
+
+        record_request(graphql_url, resp.status_code)
+
+        if resp.status_code != 200:
+            logger.warning(
+                "fetch_repo_metadata_batch: HTTP %s for chunk at index %d",
+                resp.status_code,
+                chunk_start,
+            )
+            continue
+
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            logger.warning(
+                "fetch_repo_metadata_batch: unparseable JSON for chunk at index %d: %s",
+                chunk_start,
+                exc,
+            )
+            continue
+
+        if payload.get("errors"):
+            logger.debug(
+                "fetch_repo_metadata_batch: GraphQL errors in chunk (still using resolved data): %s",
+                payload["errors"],
+            )
+
+        data = payload.get("data") or {}
+
+        # Map resolved aliases back to full_name
+        alias_to_full: dict[str, str] = {
+            alias: repo_full_names[orig_idx]
+            for orig_idx, alias, _owner, _name in chunk
+        }
+
+        for alias, node in data.items():
+            if node is None:
+                continue  # repo not found / inaccessible
+            full_name = alias_to_full.get(alias)
+            if full_name is None:
+                continue
+            default_branch_ref = node.get("defaultBranchRef") or {}
+            topics = [
+                n["topic"]["name"]
+                for n in (node.get("repositoryTopics") or {}).get("nodes", [])
+                if n and n.get("topic")
+            ]
+            result[full_name] = {
+                "stargazers_count": node.get("stargazerCount") or 0,
+                "pushed_at": node.get("pushedAt") or "",
+                "description": node.get("description") or "",
+                "default_branch": default_branch_ref.get("name") or "main",
+                "topics": topics,
+            }
+
+    return result
 
 
 def fetch_commit_sha(session, repo_full_name: str) -> str | None:

@@ -12,6 +12,7 @@ from crawlers.base import (
     decode_b64_utf8,
     extract_github_url,
     fetch_commit_sha,
+    fetch_repo_metadata_batch,
     fetch_skill_md,
     load_crawl_state,
     load_existing_records,
@@ -21,8 +22,9 @@ from crawlers.base import (
     save_crawl_state,
     write_jsonl,
     fetch_skill_md_cached,
-    load_content_cache,
-    save_content_cache,
+    find_skill_md_paths_cached,
+    load_tree_cache,
+    save_tree_cache,
 )
 
 
@@ -1029,3 +1031,251 @@ class TestFetchSkillMdCached:
             content = fetch_skill_md_cached(MagicMock(), "u/r", "SKILL.md", "", "main", cache)
         assert content == "real"
         mock_fetch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestTreeCache (load_tree_cache / save_tree_cache aliases)
+# ---------------------------------------------------------------------------
+
+class TestTreeCacheAliases:
+    def test_load_tree_cache_returns_empty_for_missing_file(self, tmp_path):
+        result = load_tree_cache(str(tmp_path / "nonexistent.json"))
+        assert result == {}
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        path = str(tmp_path / "tree_cache.json")
+        cache = {"u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "sha1"}}}
+        save_tree_cache(cache, path)
+        result = load_tree_cache(path)
+        assert result == cache
+
+    def test_load_tree_cache_returns_empty_on_corrupt_file(self, tmp_path):
+        p = tmp_path / "corrupt.json"
+        p.write_text("not valid json")
+        result = load_tree_cache(str(p))
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# TestFindSkillMdPathsCached
+# ---------------------------------------------------------------------------
+
+class TestFindSkillMdPathsCached:
+    def test_cache_hit_skips_tree_call(self):
+        """Pre-seeded cache with matching pushed_at and default_branch → no API call made."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "sha1"}}
+        }
+        with patch("crawlers.base.find_skill_md_paths") as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-01-01T00:00:00Z", "main", tree_cache
+            )
+        assert result == {"SKILL.md": "sha1"}
+        mock_tree.assert_not_called()
+
+    def test_cache_miss_calls_and_stores(self):
+        """Empty cache → calls find_skill_md_paths and stores result."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "sha9"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", "main", tree_cache
+            )
+        assert result == {"SKILL.md": "sha9"}
+        mock_tree.assert_called_once()
+        assert tree_cache["u/r"] == {
+            "pushed_at": "2026-02-02T00:00:00Z",
+            "default_branch": "main",
+            "paths": {"SKILL.md": "sha9"},
+        }
+
+    def test_empty_result_not_cached(self):
+        """An empty result (no SKILL.md OR a transient Trees failure, both {}) must
+        NOT be cached — caching it would pin a repo with skills to empty forever."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", "main", tree_cache
+            )
+        assert result == {}
+        mock_tree.assert_called_once()
+        assert tree_cache == {}  # not cached
+
+    def test_changed_pushed_at_refetches(self):
+        """Stale pushed_at → refetches and updates cache entry."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "old_sha"}}
+        }
+        new_paths = {"SKILL.md": "new_sha", "sub/SKILL.md": "abc"}
+        with patch("crawlers.base.find_skill_md_paths", return_value=new_paths) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-03-15T12:00:00Z", "main", tree_cache
+            )
+        mock_tree.assert_called_once()
+        assert result == new_paths
+        assert tree_cache["u/r"]["pushed_at"] == "2026-03-15T12:00:00Z"
+        assert tree_cache["u/r"]["paths"] == new_paths
+
+    def test_empty_pushed_at_always_calls_and_does_not_cache(self):
+        """Falsy pushed_at → always calls API and never caches the result."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "x"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "", "main", tree_cache
+            )
+        assert result == {"SKILL.md": "x"}
+        mock_tree.assert_called_once()
+        assert tree_cache == {}  # nothing cached
+
+    def test_changed_default_branch_refetches(self):
+        """Same pushed_at but different default_branch → cache miss; refetches and updates."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "old"}}
+        }
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "new"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-01-01T00:00:00Z", "develop", tree_cache
+            )
+        mock_tree.assert_called_once()
+        assert result == {"SKILL.md": "new"}
+        assert tree_cache["u/r"]["default_branch"] == "develop"
+        assert tree_cache["u/r"]["paths"] == {"SKILL.md": "new"}
+
+
+# ---------------------------------------------------------------------------
+# TestFetchRepoMetadataBatch
+# ---------------------------------------------------------------------------
+
+def _make_graphql_node(
+    stargazer_count=5,
+    pushed_at="2026-01-01T00:00:00Z",
+    description="A skill.",
+    default_branch="main",
+    topics=("python", "ai"),
+):
+    """Build a fake GraphQL repository node dict."""
+    return {
+        "stargazerCount": stargazer_count,
+        "pushedAt": pushed_at,
+        "description": description,
+        "defaultBranchRef": {"name": default_branch},
+        "repositoryTopics": {
+            "nodes": [{"topic": {"name": t}} for t in topics],
+        },
+    }
+
+
+def _make_graphql_response(aliases: dict):
+    """Wrap alias→node mapping in a fake GraphQL response envelope."""
+    return {"data": aliases}
+
+
+class TestFetchRepoMetadataBatch:
+    """Unit tests for fetch_repo_metadata_batch() — no network."""
+
+    def _mock_session(self, json_body, status_code=200):
+        """Return a MagicMock session whose .post() returns a fake response."""
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json.return_value = json_body
+        session = MagicMock()
+        session.post.return_value = resp
+        return session
+
+    def test_parses_batch_response(self):
+        """Two repos resolved → both are in the result with correct flattened fields."""
+        payload = _make_graphql_response({
+            "r0": _make_graphql_node(
+                stargazer_count=10,
+                pushed_at="2026-03-01T00:00:00Z",
+                description="skill a",
+                default_branch="main",
+                topics=["python"],
+            ),
+            "r1": _make_graphql_node(
+                stargazer_count=20,
+                pushed_at="2026-04-01T00:00:00Z",
+                description="skill b",
+                default_branch="develop",
+                topics=["go", "cli"],
+            ),
+        })
+        session = self._mock_session(payload)
+        result = fetch_repo_metadata_batch(session, ["o/a", "o/b"])
+
+        assert set(result.keys()) == {"o/a", "o/b"}
+
+        a = result["o/a"]
+        assert a["stargazers_count"] == 10
+        assert a["pushed_at"] == "2026-03-01T00:00:00Z"
+        assert a["description"] == "skill a"
+        assert a["default_branch"] == "main"
+        assert a["topics"] == ["python"]
+
+        b = result["o/b"]
+        assert b["stargazers_count"] == 20
+        assert b["default_branch"] == "develop"
+        assert b["topics"] == ["go", "cli"]
+
+    def test_null_repo_is_omitted(self):
+        """An alias whose value is null is absent from the result."""
+        payload = _make_graphql_response({
+            "r0": _make_graphql_node(stargazer_count=5),
+            "r1": None,
+        })
+        session = self._mock_session(payload)
+        result = fetch_repo_metadata_batch(session, ["o/a", "o/b"])
+
+        assert "o/a" in result
+        assert "o/b" not in result
+
+    def test_partial_errors_still_returns_resolved(self):
+        """data with one resolved repo AND a top-level errors list → resolved repo returned."""
+        payload = {
+            "data": {
+                "r0": _make_graphql_node(stargazer_count=7),
+                "r1": None,
+            },
+            "errors": [{"message": "Could not resolve to a Repository with the name 'o/missing'."}],
+        }
+        session = self._mock_session(payload)
+        result = fetch_repo_metadata_batch(session, ["o/a", "o/missing"])
+
+        assert "o/a" in result
+        assert result["o/a"]["stargazers_count"] == 7
+        assert "o/missing" not in result
+
+    def test_non_200_returns_empty(self):
+        """HTTP 500 → {} with no exception raised."""
+        session = self._mock_session({}, status_code=500)
+        result = fetch_repo_metadata_batch(session, ["o/a", "o/b"])
+
+        assert result == {}
+        # No exception propagated
+        session.post.assert_called_once()
+
+    def test_chunks_over_100(self):
+        """150 repos → two POST calls (100 + 50)."""
+        # Both chunks return empty data (all null / absent) — we just count POSTs.
+        payload = {"data": {}}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = payload
+        session = MagicMock()
+        session.post.return_value = resp
+
+        names = [f"owner/repo{i}" for i in range(150)]
+        fetch_repo_metadata_batch(session, names)
+
+        assert session.post.call_count == 2
+
+    def test_counts_graphql_request(self):
+        """A successful batch POST increments the 'graphql' API counter."""
+        from crawlers.base import reset_api_counters, get_api_counters
+
+        payload = _make_graphql_response({"r0": _make_graphql_node()})
+        session = self._mock_session(payload)
+
+        reset_api_counters()
+        fetch_repo_metadata_batch(session, ["o/a"])
+
+        assert get_api_counters()["graphql"] >= 1

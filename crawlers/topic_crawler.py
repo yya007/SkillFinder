@@ -35,18 +35,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from crawlers.base import (
     GITHUB_API,
     add_to_filter_cache,
+    fetch_repo_metadata_batch,
     fetch_repo_metadata_cached,
     fetch_skill_md_cached,
-    find_skill_md_paths,
+    find_skill_md_paths_cached,
     github_get,
     infer_platforms,
     load_content_cache,
     load_filter_cache,
     load_meta_cache,
+    load_tree_cache,
     make_session,
     parse_frontmatter,
     save_content_cache,
     save_meta_cache,
+    save_tree_cache,
     write_jsonl,
 )
 
@@ -100,12 +103,19 @@ def _discover_topic_repos(session, limit: int = 1000) -> list[str]:
     Paginates each query (up to 1000 results per query as GitHub allows).
     Returns a deduplicated list of "{owner}/{repo}" full names, at most `limit`.
 
+    Note: every run searches all topics in full. Topic membership changes
+    independently of ``pushed_at`` and GitHub search has no "topic-added-since"
+    qualifier, so a date-filtered incremental discovery cannot be correct here —
+    a repo that gains a skill topic without a new commit would be missed. The
+    crawl stays cheap via the metadata/tree/content caches downstream, not by
+    narrowing discovery.
+
     Args:
         session: A requests.Session from make_session().
         limit:   Total maximum unique repos to return across all queries.
 
     Returns:
-        Deduplicated list of full repo names.
+        Deduplicated list of full repo names, at most `limit`.
     """
     seen: set[str] = set()
     results: list[str] = []
@@ -218,9 +228,10 @@ def run(
 
     session = make_session(token=token)
 
-    # Load ETag metadata cache and blob-SHA content cache
+    # Load ETag metadata cache, blob-SHA content cache, and Trees-path cache
     meta_cache = load_meta_cache("data/crawl_state/repo_meta_cache.json")
     content_cache = load_content_cache("data/crawl_state/content_cache.json")
+    tree_cache = load_tree_cache("data/crawl_state/tree_cache.json")
 
     # Load filter cache (repos known to have no SKILL.md)
     filter_cache: set[str] = set()
@@ -253,8 +264,29 @@ def run(
                     pass
         log.info("Resume mode: %d skill keys already in output", len(existing_skill_keys))
 
-    # Discover repos via topic search
+    # Discover repos via topic search (full each run — see _discover_topic_repos note).
     discovered = _discover_topic_repos(session, limit=1000)
+
+    # Pre-filter discovered repos before the GraphQL batch to avoid wasting quota on
+    # repos that will be skipped anyway (already_covered or in filter_cache).
+    to_process = []
+    for full_name in discovered:
+        repo_url = f"https://github.com/{full_name}"
+        canon_url = repo_url.lower()
+        if canon_url in already_covered:
+            log.debug("Skipping %s: already covered by another crawler", full_name)
+            continue
+        if canon_url in filter_cache or repo_url in filter_cache:
+            log.debug("Skipping %s: in filter cache", full_name)
+            continue
+        to_process.append(full_name)
+
+    # Lazily batch-fetch metadata in chunks of 100 as the loop consumes repos.
+    # A small --limit should not pay GraphQL for repos that are never processed.
+    # Each chunk of ≤100 repos costs one GraphQL POST (separate 5k-point/hr pool).
+    # Repos absent from any chunk's result fall back to per-repo REST below.
+    batch_meta: dict = {}
+    _batched_upto = 0
 
     # Cache (meta, skill_md_paths) per repo to avoid repeated API calls
     _repo_cache: dict[str, tuple[dict, list[str]]] = {}
@@ -264,32 +296,37 @@ def run(
 
     records: list[dict] = []
 
-    for full_name in discovered:
+    for idx, full_name in enumerate(to_process):
         if limit is not None and len(records) >= limit:
             log.info("Reached limit of %d records; stopping.", limit)
             break
 
+        # Lazily batch-fetch metadata in chunks of 100 as the loop reaches them, so a
+        # small --limit doesn't pay GraphQL for repos that are never processed.
+        if idx >= _batched_upto:
+            chunk = to_process[_batched_upto:_batched_upto + 100]
+            batch_meta.update(fetch_repo_metadata_batch(session, chunk))
+            _batched_upto += 100
+
         repo_url = f"https://github.com/{full_name}"
-        canon_url = repo_url.lower()
-
-        # Skip repos already covered by other crawlers
-        if canon_url in already_covered:
-            log.debug("Skipping %s: already covered by another crawler", full_name)
-            continue
-
-        # Skip repos with no SKILL.md (from filter cache)
-        if canon_url in filter_cache or repo_url in filter_cache:
-            log.debug("Skipping %s: in filter cache", full_name)
-            continue
 
         # Fetch metadata + SKILL.md paths
         if full_name not in _repo_cache:
             try:
-                meta = fetch_repo_metadata_cached(session, full_name, meta_cache)
+                # Use GraphQL batch result when available; fall back to per-repo REST
+                meta = batch_meta.get(full_name) or fetch_repo_metadata_cached(
+                    session, full_name, meta_cache
+                )
             except RuntimeError as exc:
                 log.warning("Could not fetch metadata for %s: %s", full_name, exc)
                 continue
-            skill_md_paths = find_skill_md_paths(session, full_name)
+            skill_md_paths = find_skill_md_paths_cached(
+                session,
+                full_name,
+                meta.get("pushed_at", ""),
+                meta.get("default_branch", "main"),
+                tree_cache,
+            )
             _repo_cache[full_name] = (meta, skill_md_paths)
             if not skill_md_paths:
                 if filter_cache_path:
@@ -360,6 +397,7 @@ def run(
 
     save_meta_cache(meta_cache, "data/crawl_state/repo_meta_cache.json")
     save_content_cache(content_cache, "data/crawl_state/content_cache.json")
+    save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
 
     written = write_jsonl(records, output_path, append=resume)
     log.info("Topic crawler done: %d records written to %s", written, output_path)
@@ -398,7 +436,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=["full", "incremental", "metadata", "discover"],
         default="full",
-        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=alias for full discovery",
     )
     p.add_argument(
         "--resume",
