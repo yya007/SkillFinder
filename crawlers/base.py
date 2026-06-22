@@ -570,14 +570,20 @@ def find_skill_md_paths_cached(
     session,
     repo_full_name: str,
     pushed_at: str,
+    default_branch: str,
     tree_cache: dict,
 ) -> dict[str, str]:
     """Return SKILL.md paths for a repo, skipping the Trees API call when unchanged.
 
-    Uses ``pushed_at`` as a freshness key.  If the repo's ``pushed_at`` timestamp
-    matches what is stored in ``tree_cache``, the cached ``{path: sha}`` mapping is
-    returned immediately without any API call.  Otherwise ``find_skill_md_paths`` is
-    called and the result is stored back into ``tree_cache`` (mutated in place).
+    Uses ``(pushed_at, default_branch)`` as the freshness key.  If both match what is
+    stored in ``tree_cache``, the cached ``{path: sha}`` mapping is returned
+    immediately without any API call.  Otherwise ``find_skill_md_paths`` is called and
+    the result is stored back into ``tree_cache`` (mutated in place).
+
+    ``default_branch`` is part of the key because ``find_skill_md_paths`` walks
+    ``git/trees/HEAD`` (the default branch): a default-branch change resolves HEAD to a
+    different tree even when ``pushed_at`` is unchanged, so keying on ``pushed_at``
+    alone would return stale paths/blob SHAs from the old branch.
 
     An empty or falsy ``pushed_at`` always calls the API and never caches the result
     because we cannot prove freshness without a timestamp.
@@ -587,14 +593,20 @@ def find_skill_md_paths_cached(
         repo_full_name: "{owner}/{repo}" string.
         pushed_at:      The repo's ``pushed_at`` ISO-8601 string from the metadata API.
                         Pass ``""`` (or any falsy value) to force a live fetch.
+        default_branch: The repo's current default branch name.
         tree_cache:     Mutable dict that persists across calls within a crawl run.
-                        Shape: ``{repo_full_name: {"pushed_at": str, "paths": dict}}``.
+                        Shape: ``{repo: {"pushed_at": str, "default_branch": str, "paths": dict}}``.
 
     Returns:
         Dict mapping SKILL.md path → blob SHA (same contract as ``find_skill_md_paths``).
     """
-    if pushed_at and tree_cache.get(repo_full_name, {}).get("pushed_at") == pushed_at:
-        return tree_cache[repo_full_name]["paths"]
+    entry = tree_cache.get(repo_full_name, {})
+    if (
+        pushed_at
+        and entry.get("pushed_at") == pushed_at
+        and entry.get("default_branch") == default_branch
+    ):
+        return entry["paths"]
 
     paths = find_skill_md_paths(session, repo_full_name)
     # Only cache a NON-empty result. find_skill_md_paths returns {} both for a
@@ -603,7 +615,11 @@ def find_skill_md_paths_cached(
     # "empty" forever (it never re-fetches until pushed again). Genuinely empty
     # repos are cheaply re-checked and short-circuited by the crawler's filter cache.
     if pushed_at and paths:
-        tree_cache[repo_full_name] = {"pushed_at": pushed_at, "paths": paths}
+        tree_cache[repo_full_name] = {
+            "pushed_at": pushed_at,
+            "default_branch": default_branch,
+            "paths": paths,
+        }
     return paths
 
 

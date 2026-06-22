@@ -22,8 +22,6 @@ from crawlers.base import (
     save_crawl_state,
     write_jsonl,
     fetch_skill_md_cached,
-    load_content_cache,
-    save_content_cache,
     find_skill_md_paths_cached,
     load_tree_cache,
     save_tree_cache,
@@ -1064,13 +1062,13 @@ class TestTreeCacheAliases:
 
 class TestFindSkillMdPathsCached:
     def test_cache_hit_skips_tree_call(self):
-        """Pre-seeded cache with matching pushed_at → no API call made."""
+        """Pre-seeded cache with matching pushed_at and default_branch → no API call made."""
         tree_cache = {
-            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "sha1"}}
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "sha1"}}
         }
         with patch("crawlers.base.find_skill_md_paths") as mock_tree:
             result = find_skill_md_paths_cached(
-                MagicMock(), "u/r", "2026-01-01T00:00:00Z", tree_cache
+                MagicMock(), "u/r", "2026-01-01T00:00:00Z", "main", tree_cache
             )
         assert result == {"SKILL.md": "sha1"}
         mock_tree.assert_not_called()
@@ -1080,12 +1078,13 @@ class TestFindSkillMdPathsCached:
         tree_cache = {}
         with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "sha9"}) as mock_tree:
             result = find_skill_md_paths_cached(
-                MagicMock(), "u/r", "2026-02-02T00:00:00Z", tree_cache
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", "main", tree_cache
             )
         assert result == {"SKILL.md": "sha9"}
         mock_tree.assert_called_once()
         assert tree_cache["u/r"] == {
             "pushed_at": "2026-02-02T00:00:00Z",
+            "default_branch": "main",
             "paths": {"SKILL.md": "sha9"},
         }
 
@@ -1095,7 +1094,7 @@ class TestFindSkillMdPathsCached:
         tree_cache = {}
         with patch("crawlers.base.find_skill_md_paths", return_value={}) as mock_tree:
             result = find_skill_md_paths_cached(
-                MagicMock(), "u/r", "2026-02-02T00:00:00Z", tree_cache
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", "main", tree_cache
             )
         assert result == {}
         mock_tree.assert_called_once()
@@ -1104,12 +1103,12 @@ class TestFindSkillMdPathsCached:
     def test_changed_pushed_at_refetches(self):
         """Stale pushed_at → refetches and updates cache entry."""
         tree_cache = {
-            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "old_sha"}}
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "old_sha"}}
         }
         new_paths = {"SKILL.md": "new_sha", "sub/SKILL.md": "abc"}
         with patch("crawlers.base.find_skill_md_paths", return_value=new_paths) as mock_tree:
             result = find_skill_md_paths_cached(
-                MagicMock(), "u/r", "2026-03-15T12:00:00Z", tree_cache
+                MagicMock(), "u/r", "2026-03-15T12:00:00Z", "main", tree_cache
             )
         mock_tree.assert_called_once()
         assert result == new_paths
@@ -1121,11 +1120,25 @@ class TestFindSkillMdPathsCached:
         tree_cache = {}
         with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "x"}) as mock_tree:
             result = find_skill_md_paths_cached(
-                MagicMock(), "u/r", "", tree_cache
+                MagicMock(), "u/r", "", "main", tree_cache
             )
         assert result == {"SKILL.md": "x"}
         mock_tree.assert_called_once()
         assert tree_cache == {}  # nothing cached
+
+    def test_changed_default_branch_refetches(self):
+        """Same pushed_at but different default_branch → cache miss; refetches and updates."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "default_branch": "main", "paths": {"SKILL.md": "old"}}
+        }
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "new"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-01-01T00:00:00Z", "develop", tree_cache
+            )
+        mock_tree.assert_called_once()
+        assert result == {"SKILL.md": "new"}
+        assert tree_cache["u/r"]["default_branch"] == "develop"
+        assert tree_cache["u/r"]["paths"] == {"SKILL.md": "new"}
 
 
 # ---------------------------------------------------------------------------

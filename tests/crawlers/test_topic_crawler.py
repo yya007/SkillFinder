@@ -35,7 +35,7 @@ class TestDiscoverTopicRepos:
         session = MagicMock()
         with patch("crawlers.topic_crawler.github_get") as mock_get:
             mock_get.side_effect = [page, empty] * 20
-            result, _ = _discover_topic_repos(session, limit=100)
+            result = _discover_topic_repos(session, limit=100)
 
         assert "user/skill-a" in result
         assert "user/skill-b" in result
@@ -49,7 +49,7 @@ class TestDiscoverTopicRepos:
         session = MagicMock()
         with patch("crawlers.topic_crawler.github_get") as mock_get:
             mock_get.side_effect = [both, empty] * 20
-            result, _ = _discover_topic_repos(session, limit=100)
+            result = _discover_topic_repos(session, limit=100)
 
         assert result.count("user/shared-skill") == 1
 
@@ -62,23 +62,9 @@ class TestDiscoverTopicRepos:
         session = MagicMock()
         with patch("crawlers.topic_crawler.github_get") as mock_get:
             mock_get.side_effect = [big_page, empty] * 20
-            result, complete = _discover_topic_repos(session, limit=5)
+            result = _discover_topic_repos(session, limit=5)
 
         assert len(result) <= 5
-        # Hitting the cap means coverage is partial → incomplete.
-        assert complete is False
-
-    def test_complete_when_under_cap_and_no_errors(self):
-        from crawlers.topic_crawler import _discover_topic_repos
-
-        page = {"items": [{"full_name": "user/skill-a"}]}
-        empty = {"items": []}
-        session = MagicMock()
-        with patch("crawlers.topic_crawler.github_get") as mock_get:
-            mock_get.side_effect = [page, empty] * 30
-            result, complete = _discover_topic_repos(session, limit=1000)
-
-        assert complete is True
 
     def test_handles_api_error_gracefully(self):
         from crawlers.topic_crawler import _discover_topic_repos
@@ -86,25 +72,9 @@ class TestDiscoverTopicRepos:
         session = MagicMock()
         with patch("crawlers.topic_crawler.github_get") as mock_get:
             mock_get.side_effect = RuntimeError("rate limited")
-            result, complete = _discover_topic_repos(session, limit=10)
+            result = _discover_topic_repos(session, limit=10)
 
         assert result == []
-        assert complete is False
-
-    def test_incomplete_results_marks_incomplete(self):
-        """A timed-out search (HTTP 200, incomplete_results=true) → discovery incomplete."""
-        from crawlers.topic_crawler import _discover_topic_repos
-
-        partial = {"items": [{"full_name": "user/skill-a"}], "incomplete_results": True}
-        empty = {"items": [], "incomplete_results": False}
-        session = MagicMock()
-        with patch("crawlers.topic_crawler.github_get") as mock_get:
-            mock_get.side_effect = [partial, empty] * 30
-            result, complete = _discover_topic_repos(session, limit=1000)
-
-        assert "user/skill-a" in result
-        assert complete is False
-        assert complete is False
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +112,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/skill-a", "user/skill-b"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = SAMPLE_SKILL_MD
@@ -168,10 +136,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/skill-a"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = SAMPLE_SKILL_MD
@@ -196,10 +162,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/skill-a"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None
@@ -223,10 +187,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = ([f"user/skill-{i}" for i in range(10)], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = [f"user/skill-{i}" for i in range(10)]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None
@@ -249,10 +211,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/no-skill-md", "user/has-skill-md"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/no-skill-md", "user/has-skill-md"]
             mock_meta.return_value = _mock_meta()
             mock_paths.side_effect = [{}, {"SKILL.md": "sha1"}]
             mock_skill_md.return_value = None
@@ -283,10 +243,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/already-covered", "user/new-skill"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/already-covered", "user/new-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None
@@ -321,10 +279,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/skill-a", "user/skill-b"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None
@@ -346,10 +302,8 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
-            mock_disc.return_value = (["user/my-cool-skill"], True)
+             patch("crawlers.topic_crawler.save_tree_cache"):
+            mock_disc.return_value = ["user/my-cool-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None  # no frontmatter
@@ -394,12 +348,10 @@ class TestTopicCrawlerRun:
         )
         monkeypatch.setattr(
             tc, "find_skill_md_paths_cached",
-            lambda s, r, p, c: {"SKILL.md": "sha1"},
+            lambda s, r, p, db, c: {"SKILL.md": "sha1"},
         )
         monkeypatch.setattr(tc, "fetch_skill_md_cached", lambda *a, **k: "---\nname: t\n---")
-        monkeypatch.setattr(tc, "_discover_topic_repos", lambda s, limit=1000, since=None: (["user/skill-a"], True))
-        monkeypatch.setattr(tc, "load_crawl_state", lambda p: {})
-        monkeypatch.setattr(tc, "save_crawl_state", lambda state, p: None)
+        monkeypatch.setattr(tc, "_discover_topic_repos", lambda s, limit=1000: ["user/skill-a"])
 
         out = str(tmp_path / "out.jsonl")
         count = tc.run(out)
@@ -409,174 +361,6 @@ class TestTopicCrawlerRun:
         assert calls["saved_content"] == 1
         assert calls["saved_tree"] == 1
 
-
-# ---------------------------------------------------------------------------
-# TestDiscoverPushedFilter — date-filter tests (RED phase)
-# ---------------------------------------------------------------------------
-
-class TestDiscoverPushedFilter:
-    """Tests for the since= date-filter on _discover_topic_repos."""
-
-    def test_discover_appends_pushed_filter_when_since_set(self):
-        """When since is set, every query q should end with pushed:><since>."""
-        from crawlers.topic_crawler import _discover_topic_repos
-
-        captured_qs: list[str] = []
-
-        def fake_github_get(session, url, params=None, **kwargs):
-            if params:
-                captured_qs.append(params.get("q", ""))
-            return {"items": []}
-
-        session = MagicMock()
-        with patch("crawlers.topic_crawler.github_get", side_effect=fake_github_get):
-            _discover_topic_repos(session, since="2026-01-01T00:00:00Z")
-
-        assert len(captured_qs) > 0
-        for q in captured_qs:
-            assert q.endswith(" pushed:>2026-01-01T00:00:00Z"), (
-                f"Expected q to end with pushed filter, got: {q!r}"
-            )
-
-    def test_discover_no_filter_when_since_none(self):
-        """When since is None, no query q should contain 'pushed:>'."""
-        from crawlers.topic_crawler import _discover_topic_repos
-
-        captured_qs: list[str] = []
-
-        def fake_github_get(session, url, params=None, **kwargs):
-            if params:
-                captured_qs.append(params.get("q", ""))
-            return {"items": []}
-
-        session = MagicMock()
-        with patch("crawlers.topic_crawler.github_get", side_effect=fake_github_get):
-            _discover_topic_repos(session, since=None)
-
-        assert len(captured_qs) > 0
-        for q in captured_qs:
-            assert "pushed:>" not in q, (
-                f"Expected no pushed filter when since=None, got: {q!r}"
-            )
-
-    def test_run_uses_and_saves_discovery_state(self, tmp_path):
-        """run() in discover mode reads last_discovery_at and saves updated state."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            mock_disc.return_value = (["user/skill-a"], True)  # non-empty: a successful discovery
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {}
-            mock_skill_md.return_value = None
-
-            out = str(tmp_path / "out.jsonl")
-            run(out, mode="discover")
-
-        # _discover_topic_repos was called with since= from state
-        mock_disc.assert_called_once()
-        call_kwargs = mock_disc.call_args
-        assert call_kwargs.kwargs.get("since") == "2026-01-01T00:00:00Z", (
-            f"Expected since='2026-01-01T00:00:00Z', got call: {call_kwargs}"
-        )
-
-        # save_crawl_state was called once and the state has last_discovery_at set
-        mock_save_state.assert_called_once()
-        saved_state = mock_save_state.call_args.args[0]
-        assert "last_discovery_at" in saved_state
-        assert saved_state["last_discovery_at"]  # non-empty timestamp
-
-    def test_complete_empty_discovery_advances_window(self, tmp_path):
-        """A discovery that COMPLETES cleanly but finds nothing new still advances
-        last_discovery_at — a quiet period must not re-scan the same window forever.
-        (The transient-failure / incomplete case is covered by discovery_complete=False
-        in test_incomplete_discovery_does_not_advance_window.)"""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos", return_value=([], True)), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached"), \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached"), \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            run(str(tmp_path / "out.jsonl"), mode="discover")
-
-        mock_save_state.assert_called_once()
-
-    def test_watermark_not_saved_when_write_fails(self, tmp_path):
-        """The discovery watermark must be persisted only AFTER write_jsonl succeeds;
-        a failed write must not advance last_discovery_at past unwritten repos."""
-        import pytest
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos",
-                   return_value=(["user/skill-a"], True)), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached", return_value=_mock_meta()), \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state, \
-             patch("crawlers.topic_crawler.write_jsonl", side_effect=OSError("disk full")):
-
-            with pytest.raises(OSError):
-                run(str(tmp_path / "out.jsonl"), mode="discover")
-
-        mock_save_state.assert_not_called()
-
-    def test_capped_discovery_does_not_advance_window(self, tmp_path):
-        """A discovery that hit the result cap is incomplete (more matches exist),
-        so the watermark must NOT advance even though repos were found."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos",
-                   return_value=(["user/skill-a"], False)), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached", return_value=_mock_meta()), \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            run(str(tmp_path / "out.jsonl"), mode="discover")
-
-        mock_save_state.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -612,11 +396,9 @@ class TestTopicCrawlerBatchMetaIntegration:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
+             patch("crawlers.topic_crawler.save_tree_cache"):
 
-            mock_disc.return_value = (["user/skill-a"], True)
+            mock_disc.return_value = ["user/skill-a"]
             mock_paths.return_value = {"SKILL.md": "sha1"}
             mock_skill_md.return_value = None
 
@@ -656,14 +438,12 @@ class TestBatchPreFilter:
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"), \
              patch("crawlers.topic_crawler._load_existing_repo_urls",
                    return_value={"https://github.com/u/a"}), \
              patch("crawlers.topic_crawler.load_filter_cache",
                    return_value={"https://github.com/u/b"}):
 
-            mock_disc.return_value = (["u/a", "u/b", "u/c"], True)
+            mock_disc.return_value = ["u/a", "u/b", "u/c"]
             mock_batch.return_value = {}
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {}
@@ -677,240 +457,9 @@ class TestBatchPreFilter:
         mock_batch.assert_called_once()
         called_names = mock_batch.call_args.args[1]
         assert "u/c" in called_names, f"Expected u/c in batch call, got {called_names}"
-        assert "u/a" not in called_names, f"u/a (already_covered) must be excluded"
-        assert "u/b" not in called_names, f"u/b (filter_cache) must be excluded"
+        assert "u/a" not in called_names, "u/a (already_covered) must be excluded"
+        assert "u/b" not in called_names, "u/b (filter_cache) must be excluded"
 
-
-class TestWatermarkAdvancement:
-    """P2 #2: last_discovery_at should advance only after a complete, clean sweep."""
-
-    def test_limit_truncation_does_not_advance_window(self, tmp_path):
-        """When limit is hit (truncated=True), save_crawl_state must NOT be called."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            # 3 repos each with a skill, but limit=1 so truncated after first
-            mock_disc.return_value = (["user/skill-0", "user/skill-1", "user/skill-2"], True)
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {"SKILL.md": "sha1"}
-            mock_skill_md.return_value = SAMPLE_SKILL_MD
-
-            out = str(tmp_path / "out.jsonl")
-            run(out, limit=1)
-
-        mock_save_state.assert_not_called()
-
-    def test_inner_loop_limit_truncation_does_not_advance_window(self, tmp_path):
-        """When --limit is hit INSIDE a repo's skill loop (a single repo with multiple
-        SKILL.md), truncated must still be set so the watermark does not advance."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            # ONE repo with TWO SKILL.md files, limit=1 → truncates inside the inner loop
-            mock_disc.return_value = (["user/multi-skill"], True)
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {"SKILL.md": "sha1", "sub/SKILL.md": "sha2"}
-            mock_skill_md.return_value = SAMPLE_SKILL_MD
-
-            run(str(tmp_path / "out.jsonl"), limit=1)
-
-        mock_save_state.assert_not_called()
-
-    def test_per_repo_failure_does_not_advance_window(self, tmp_path):
-        """When fetch_repo_metadata_cached raises RuntimeError, save_crawl_state must
-        NOT be called (had_failure=True)."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            mock_disc.return_value = (["user/skill-a"], True)
-            # batch returns empty so REST fallback is triggered; REST raises
-            mock_meta.side_effect = RuntimeError("API failure")
-            mock_paths.return_value = {}
-            mock_skill_md.return_value = None
-
-            out = str(tmp_path / "out.jsonl")
-            run(out)
-
-        mock_save_state.assert_not_called()
-
-    def test_clean_full_sweep_advances_window(self, tmp_path):
-        """A complete run with no truncation or failures MUST advance last_discovery_at."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            mock_disc.return_value = (["user/skill-a"], True)
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {"SKILL.md": "sha1"}
-            mock_skill_md.return_value = SAMPLE_SKILL_MD
-
-            out = str(tmp_path / "out.jsonl")
-            run(out, mode="discover")
-
-        mock_save_state.assert_called_once()
-        saved_state = mock_save_state.call_args.args[0]
-        assert "last_discovery_at" in saved_state
-
-    def test_incomplete_discovery_does_not_advance_window(self, tmp_path):
-        """When _discover_topic_repos returns discovery_complete=False (partial result
-        due to a per-query RuntimeError), save_crawl_state must NOT be called.
-        Advancing last_discovery_at on incomplete discovery would skip repos from the
-        failed query on the next incremental run."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos",
-                   return_value=(["user/skill-a"], False)), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
-             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
-
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {}
-            mock_skill_md.return_value = None
-
-            run(str(tmp_path / "out.jsonl"), mode="discover")
-
-        mock_save_state.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# P1 fix: discover mode must append, not truncate
-# ---------------------------------------------------------------------------
-
-class TestDiscoverModeAppend:
-    """P1: discover mode date-filters to only new repos, so it MUST append."""
-
-    def test_discover_mode_appends_not_truncates(self, tmp_path):
-        """discover mode must call write_jsonl with append=True."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"), \
-             patch("crawlers.topic_crawler.write_jsonl") as mock_write:
-
-            mock_disc.return_value = (["user/skill-a"], True)
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {"SKILL.md": "sha1"}
-            mock_skill_md.return_value = None
-            mock_write.return_value = 1
-
-            out = str(tmp_path / "out.jsonl")
-            run(out, mode="discover")
-
-        mock_write.assert_called_once()
-        # append must be True for discover mode
-        call = mock_write.call_args
-        append_val = call.kwargs.get("append") if call.kwargs.get("append") is not None else call.args[2]
-        assert append_val is True, f"Expected append=True for discover mode, got: {call}"
-
-    def test_full_mode_does_not_append(self, tmp_path):
-        """full mode must call write_jsonl with append=False (rewrites)."""
-        from crawlers.topic_crawler import run
-
-        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
-             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
-             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
-             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_meta_cache"), \
-             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_content_cache"), \
-             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"), \
-             patch("crawlers.topic_crawler.write_jsonl") as mock_write:
-
-            mock_disc.return_value = (["user/skill-a"], True)
-            mock_meta.return_value = _mock_meta()
-            mock_paths.return_value = {"SKILL.md": "sha1"}
-            mock_skill_md.return_value = None
-            mock_write.return_value = 1
-
-            out = str(tmp_path / "out.jsonl")
-            run(out, mode="full")
-
-        mock_write.assert_called_once()
-        call = mock_write.call_args
-        append_val = call.kwargs.get("append") if call.kwargs.get("append") is not None else call.args[2]
-        assert append_val is False, f"Expected append=False for full mode, got: {call}"
 
 
 # ---------------------------------------------------------------------------
@@ -938,11 +487,9 @@ class TestLazyBatchRespectsLimit:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"), \
-             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
-             patch("crawlers.topic_crawler.save_crawl_state"):
+             patch("crawlers.topic_crawler.save_tree_cache"):
 
-            mock_disc.return_value = (repos_250, True)
+            mock_disc.return_value = repos_250
             mock_batch.return_value = {}  # empty -> REST fallback fills meta
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}

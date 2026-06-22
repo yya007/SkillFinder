@@ -34,7 +34,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from crawlers.base import (
     GITHUB_API,
-    _utc_now_iso,
     add_to_filter_cache,
     fetch_repo_metadata_batch,
     fetch_repo_metadata_cached,
@@ -43,14 +42,12 @@ from crawlers.base import (
     github_get,
     infer_platforms,
     load_content_cache,
-    load_crawl_state,
     load_filter_cache,
     load_meta_cache,
     load_tree_cache,
     make_session,
     parse_frontmatter,
     save_content_cache,
-    save_crawl_state,
     save_meta_cache,
     save_tree_cache,
     write_jsonl,
@@ -100,52 +97,41 @@ TOPIC_QUERIES: list[str] = [
 # Discovery
 # ---------------------------------------------------------------------------
 
-def _discover_topic_repos(
-    session, limit: int = 1000, since: str | None = None
-) -> tuple[list[str], bool]:
+def _discover_topic_repos(session, limit: int = 1000) -> list[str]:
     """Search GitHub for repos matching TOPIC_QUERIES.
 
     Paginates each query (up to 1000 results per query as GitHub allows).
-    Returns a deduplicated list of "{owner}/{repo}" full names, at most `limit`,
-    and a boolean indicating whether all queries completed without error.
+    Returns a deduplicated list of "{owner}/{repo}" full names, at most `limit`.
+
+    Note: every run searches all topics in full. Topic membership changes
+    independently of ``pushed_at`` and GitHub search has no "topic-added-since"
+    qualifier, so a date-filtered incremental discovery cannot be correct here —
+    a repo that gains a skill topic without a new commit would be missed. The
+    crawl stays cheap via the metadata/tree/content caches downstream, not by
+    narrowing discovery.
 
     Args:
         session: A requests.Session from make_session().
         limit:   Total maximum unique repos to return across all queries.
-        since:   Optional ISO-8601 timestamp.  When provided, appends
-                 ``pushed:><since>`` to every query so only repos pushed after
-                 that time are returned — dramatically reducing API quota on
-                 incremental/discover re-runs.
 
     Returns:
-        Tuple of (deduplicated list of full repo names, discovery_complete).
-        discovery_complete is False if any query raised a RuntimeError, meaning
-        the result set is partial and the caller must not advance its watermark.
+        Deduplicated list of full repo names, at most `limit`.
     """
     seen: set[str] = set()
     results: list[str] = []
-    discovery_complete = True
 
     for query in TOPIC_QUERIES:
-        effective_query = f"{query} pushed:>{since}" if since else query
         page = 1
         while len(results) < limit:
             try:
                 data = github_get(
                     session,
                     f"{GITHUB_API}/search/repositories",
-                    params={"q": effective_query, "per_page": 100, "page": page},
+                    params={"q": query, "per_page": 100, "page": page},
                 )
             except RuntimeError as exc:
-                log.warning("Topic repo search failed for %r (page %d): %s", effective_query, page, exc)
-                discovery_complete = False
+                log.warning("Topic repo search failed for %r (page %d): %s", query, page, exc)
                 break
-
-            # A timed-out search returns HTTP 200 with incomplete_results=true and a
-            # partial page; the omitted repos would be excluded by the next run's
-            # pushed:> filter, so treat this as an incomplete discovery.
-            if data.get("incomplete_results"):
-                discovery_complete = False
 
             items = data.get("items", [])
             if not items:
@@ -161,14 +147,8 @@ def _discover_topic_repos(
                 break
             page += 1
 
-    # Hitting the cap means we stopped before enumerating all matches, so coverage
-    # is partial — signal incomplete so the caller won't advance its watermark and
-    # skip repos beyond the cap.
-    if len(results) >= limit:
-        discovery_complete = False
-
     log.info("Topic discovery: %d unique repos found across %d queries", len(results), len(TOPIC_QUERIES))
-    return results[:limit], discovery_complete
+    return results[:limit]
 
 
 def _load_existing_repo_urls(raw_dirs: list[str]) -> set[str]:
@@ -241,16 +221,10 @@ def run(
     Returns:
         Number of new records written.
     """
-    # Resolve mode: incremental and discover both date-filter discovery to a partial
-    # (new/changed) set, so they must APPEND to and dedup against the existing output,
-    # never rewrite it. Only full mode rewrites.
-    if mode in ("incremental", "discover"):
+    # Resolve mode: incremental aliases resume behaviour
+    if mode == "incremental":
         resume = True
     import json as _json
-
-    # Load per-source crawl state for date-filter support
-    crawl_state = load_crawl_state("topic")
-    run_started = _utc_now_iso()
 
     session = make_session(token=token)
 
@@ -290,9 +264,8 @@ def run(
                     pass
         log.info("Resume mode: %d skill keys already in output", len(existing_skill_keys))
 
-    # Discover repos via topic search, using date-filter on incremental/discover runs
-    since = crawl_state.get("last_discovery_at") if mode in ("incremental", "discover") else None
-    discovered, discovery_complete = _discover_topic_repos(session, limit=1000, since=since)
+    # Discover repos via topic search (full each run — see _discover_topic_repos note).
+    discovered = _discover_topic_repos(session, limit=1000)
 
     # Pre-filter discovered repos before the GraphQL batch to avoid wasting quota on
     # repos that will be skipped anyway (already_covered or in filter_cache).
@@ -323,13 +296,9 @@ def run(
 
     records: list[dict] = []
 
-    truncated = False
-    had_failure = False
-
     for idx, full_name in enumerate(to_process):
         if limit is not None and len(records) >= limit:
             log.info("Reached limit of %d records; stopping.", limit)
-            truncated = True
             break
 
         # Lazily batch-fetch metadata in chunks of 100 as the loop reaches them, so a
@@ -350,10 +319,13 @@ def run(
                 )
             except RuntimeError as exc:
                 log.warning("Could not fetch metadata for %s: %s", full_name, exc)
-                had_failure = True
                 continue
             skill_md_paths = find_skill_md_paths_cached(
-                session, full_name, meta.get("pushed_at", ""), tree_cache
+                session,
+                full_name,
+                meta.get("pushed_at", ""),
+                meta.get("default_branch", "main"),
+                tree_cache,
             )
             _repo_cache[full_name] = (meta, skill_md_paths)
             if not skill_md_paths:
@@ -371,9 +343,6 @@ def run(
 
         for skill_path in skill_md_paths:
             if limit is not None and len(records) >= limit:
-                # Hitting the limit mid-repo leaves this repo's remaining SKILL.md
-                # files unwritten; mark truncated so the watermark won't advance.
-                truncated = True
                 break
 
             skill_md_url = f"{repo_url}/blob/{default_branch}/{skill_path}"
@@ -432,20 +401,6 @@ def run(
 
     written = write_jsonl(records, output_path, append=resume)
     log.info("Topic crawler done: %d records written to %s", written, output_path)
-
-    # Advance the discovery window only AFTER the records are durably written, and
-    # only after a complete, clean sweep. discovery_complete is False if a topic
-    # search query errored OR hit the result cap; truncated means --limit stopped
-    # processing; had_failure means a per-repo fetch failed. Any of those leaves
-    # repos unprocessed, and advancing past them would skip them next run (excluded
-    # by pushed:>run_started). Saving the watermark before write_jsonl would, on a
-    # failed/killed write, advance past records that were never persisted. A
-    # *complete* run that found nothing new still advances (quiet periods shouldn't
-    # re-scan the same window forever). Periodic full-mode crawls are the backstop.
-    if discovery_complete and not truncated and not had_failure:
-        crawl_state["last_discovery_at"] = run_started
-        save_crawl_state(crawl_state, "topic")
-
     return written
 
 
@@ -481,7 +436,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=["full", "incremental", "metadata", "discover"],
         default="full",
-        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=new repos since last run",
+        help="Crawl mode: full=complete re-crawl, incremental=changed repos only, metadata=stars/ETags only, discover=alias for full discovery",
     )
     p.add_argument(
         "--resume",
