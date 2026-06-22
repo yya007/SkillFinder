@@ -546,3 +546,147 @@ class TestTopicCrawlerBatchMetaIntegration:
         import json as _json
         record = _json.loads(Path(out).read_text().strip())
         assert record["raw_metadata"]["stars"] == 99
+
+
+# ---------------------------------------------------------------------------
+# P2 Fix tests: batch pre-filtering and clean-sweep watermark
+# ---------------------------------------------------------------------------
+
+class TestBatchPreFilter:
+    """P2 #1: batch should only fetch metadata for repos that survive skip filters."""
+
+    def test_batch_excludes_already_covered_and_filtered(self, tmp_path):
+        """fetch_repo_metadata_batch should only be called with repos not in
+        already_covered or filter_cache."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch") as mock_batch, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"), \
+             patch("crawlers.topic_crawler._load_existing_repo_urls",
+                   return_value={"https://github.com/u/a"}), \
+             patch("crawlers.topic_crawler.load_filter_cache",
+                   return_value={"https://github.com/u/b"}):
+
+            mock_disc.return_value = ["u/a", "u/b", "u/c"]
+            mock_batch.return_value = {}
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {}
+            mock_skill_md.return_value = None
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, filter_cache_path="fake_filter_cache.json",
+                existing_raw_dirs=["fake_raw_dir"])
+
+        # batch must be called exactly once
+        mock_batch.assert_called_once()
+        called_names = mock_batch.call_args.args[1]
+        assert "u/c" in called_names, f"Expected u/c in batch call, got {called_names}"
+        assert "u/a" not in called_names, f"u/a (already_covered) must be excluded"
+        assert "u/b" not in called_names, f"u/b (filter_cache) must be excluded"
+
+
+class TestWatermarkAdvancement:
+    """P2 #2: last_discovery_at should advance only after a complete, clean sweep."""
+
+    def test_limit_truncation_does_not_advance_window(self, tmp_path):
+        """When limit is hit (truncated=True), save_crawl_state must NOT be called."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            # 3 repos each with a skill, but limit=1 so truncated after first
+            mock_disc.return_value = ["user/skill-0", "user/skill-1", "user/skill-2"]
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = SAMPLE_SKILL_MD
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, limit=1)
+
+        mock_save_state.assert_not_called()
+
+    def test_per_repo_failure_does_not_advance_window(self, tmp_path):
+        """When fetch_repo_metadata_cached raises RuntimeError, save_crawl_state must
+        NOT be called (had_failure=True)."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            mock_disc.return_value = ["user/skill-a"]
+            # batch returns empty so REST fallback is triggered; REST raises
+            mock_meta.side_effect = RuntimeError("API failure")
+            mock_paths.return_value = {}
+            mock_skill_md.return_value = None
+
+            out = str(tmp_path / "out.jsonl")
+            run(out)
+
+        mock_save_state.assert_not_called()
+
+    def test_clean_full_sweep_advances_window(self, tmp_path):
+        """A complete run with no truncation or failures MUST advance last_discovery_at."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            mock_disc.return_value = ["user/skill-a"]
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = SAMPLE_SKILL_MD
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, mode="discover")
+
+        mock_save_state.assert_called_once()
+        saved_state = mock_save_state.call_args.args[0]
+        assert "last_discovery_at" in saved_state

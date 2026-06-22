@@ -273,10 +273,24 @@ def run(
     since = crawl_state.get("last_discovery_at") if mode in ("incremental", "discover") else None
     discovered = _discover_topic_repos(session, limit=1000, since=since)
 
-    # Bulk-fetch metadata for all discovered repos via a single GraphQL batch.
-    # Each chunk of ≤100 repos costs one GraphQL POST (separate 5k-point/hr pool).
-    # Repos absent from the result fall back to the per-repo cached REST path below.
-    batch_meta = fetch_repo_metadata_batch(session, discovered)
+    # Pre-filter discovered repos before the GraphQL batch to avoid wasting quota on
+    # repos that will be skipped anyway (already_covered or in filter_cache).
+    to_process = []
+    for full_name in discovered:
+        repo_url = f"https://github.com/{full_name}"
+        canon_url = repo_url.lower()
+        if canon_url in already_covered:
+            log.debug("Skipping %s: already covered by another crawler", full_name)
+            continue
+        if canon_url in filter_cache or repo_url in filter_cache:
+            log.debug("Skipping %s: in filter cache", full_name)
+            continue
+        to_process.append(full_name)
+
+    # Bulk-fetch metadata only for repos that will actually be processed via a single
+    # GraphQL batch. Each chunk of ≤100 repos costs one GraphQL POST (separate
+    # 5k-point/hr pool). Repos absent from the result fall back to per-repo REST below.
+    batch_meta = fetch_repo_metadata_batch(session, to_process)
 
     # Cache (meta, skill_md_paths) per repo to avoid repeated API calls
     _repo_cache: dict[str, tuple[dict, list[str]]] = {}
@@ -286,23 +300,16 @@ def run(
 
     records: list[dict] = []
 
-    for full_name in discovered:
+    truncated = False
+    had_failure = False
+
+    for full_name in to_process:
         if limit is not None and len(records) >= limit:
             log.info("Reached limit of %d records; stopping.", limit)
+            truncated = True
             break
 
         repo_url = f"https://github.com/{full_name}"
-        canon_url = repo_url.lower()
-
-        # Skip repos already covered by other crawlers
-        if canon_url in already_covered:
-            log.debug("Skipping %s: already covered by another crawler", full_name)
-            continue
-
-        # Skip repos with no SKILL.md (from filter cache)
-        if canon_url in filter_cache or repo_url in filter_cache:
-            log.debug("Skipping %s: in filter cache", full_name)
-            continue
 
         # Fetch metadata + SKILL.md paths
         if full_name not in _repo_cache:
@@ -313,6 +320,7 @@ def run(
                 )
             except RuntimeError as exc:
                 log.warning("Could not fetch metadata for %s: %s", full_name, exc)
+                had_failure = True
                 continue
             skill_md_paths = find_skill_md_paths_cached(
                 session, full_name, meta.get("pushed_at", ""), tree_cache
@@ -389,12 +397,11 @@ def run(
     save_content_cache(content_cache, "data/crawl_state/content_cache.json")
     save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
 
-    # Persist discovery timestamp so next incremental/discover run can filter by it.
-    # Use run_started (not now) so repos pushed *during* this crawl aren't missed.
-    # Only advance the window when discovery actually returned repos: a transient
-    # failure (rate-limit/empty search) must NOT push last_discovery_at forward, or
-    # the next incremental run would silently skip repos changed in the gap.
-    if discovered:
+    # Advance the discovery window only after a complete, clean sweep. A --limit
+    # truncation or a per-repo failure leaves discovered repos unprocessed; advancing
+    # past them would skip them next run (they're excluded by pushed:>run_started).
+    # Periodic full-mode crawls are the backstop for anything missed.
+    if discovered and not truncated and not had_failure:
         crawl_state["last_discovery_at"] = run_started
         save_crawl_state(crawl_state, "topic")
 
