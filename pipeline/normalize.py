@@ -362,7 +362,10 @@ def normalize(
         Number of records written to output_path.
 
     Raises:
-        FileNotFoundError: if any path in raw_paths does not exist.
+        ValueError:        if an input file is mostly malformed JSON (> 5 bad
+                           lines and > 10%), indicating corruption rather than a
+                           clipped tail. Isolated bad lines, and inputs that do
+                           not exist, are skipped with a warning.
         QualityGateError:  if the output record count is below min_skills.
     """
     # ------------------------------------------------------------------ load
@@ -373,18 +376,34 @@ def normalize(
     for path in raw_paths:
         p = Path(path)
         if not p.exists():
-            raise FileNotFoundError(f"Input file not found: {path}")
+            # A crawler killed mid-run (the topic and clawhub crawlers write
+            # their output only once, at the end) leaves its file unwritten.
+            # Skip it rather than aborting — same best-effort contract as below.
+            # If *every* input is missing the >=min_skills quality gate fails.
+            logger.warning("Input file not found, skipping: %s", path)
+            continue
+        # Tolerate malformed lines rather than aborting the whole run. In CI
+        # each crawler is wrapped in `timeout`; a SIGTERM mid-write leaves a
+        # truncated final line, and the pipeline is designed to "proceed with
+        # whatever data was written" (the >=8,000 quality gate is the backstop
+        # for wholesale failure). We still fail loudly if a file is *mostly*
+        # unparseable, which signals real corruption rather than a clipped tail.
+        file_lines = 0
+        file_malformed = 0
         with p.open(encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
+                file_lines += 1
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"JSON parse error in {path}:{lineno}: {exc}"
-                    ) from exc
+                    file_malformed += 1
+                    logger.warning(
+                        "Skipping malformed JSON in %s:%d: %s", path, lineno, exc
+                    )
+                    continue
                 # Skip tombstone records
                 if record.get("tombstone"):
                     logger.debug("Skipping tombstone record: %s", record.get("skill_md_url", record.get("repo_url", "")))
@@ -401,6 +420,24 @@ def normalize(
                 skill_md_url = record.get("raw_metadata", {}).get("skill_md_url", "")
                 key = canonical_key(skill_md_url) if skill_md_url else canonical_key(repo_url)
                 groups.setdefault(key, []).append(record)
+
+        if file_malformed:
+            # A clipped tail is a line or two; a high ratio means the file is
+            # corrupt (bad encoding, half-flushed buffer) and should not pass
+            # silently as a healthy-but-small crawl.
+            ratio = file_malformed / file_lines if file_lines else 1.0
+            logger.warning(
+                "%s: skipped %d/%d malformed lines (%.1f%%)",
+                path, file_malformed, file_lines, ratio * 100,
+            )
+            # Require both an absolute floor and a high ratio: a couple of bad
+            # lines in a short crawl is still just a clipped tail, not corruption.
+            if file_malformed > 5 and ratio > 0.10:
+                raise ValueError(
+                    f"{path}: {file_malformed}/{file_lines} lines "
+                    f"({ratio * 100:.1f}%) are malformed JSON — file looks "
+                    f"corrupt, not just truncated"
+                )
 
     # ----------------------------------------------------------------- merge
     output_records: list[dict] = []

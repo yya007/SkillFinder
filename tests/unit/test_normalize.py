@@ -353,8 +353,20 @@ class TestNormalize:
         with pytest.raises(QualityGateError):
             normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output, min_skills=99999)
 
-    def test_raises_file_not_found_for_missing_input(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+    def test_skips_missing_input_file(self, tmp_raw_dir, tmp_path):
+        """A missing input (e.g. a crawler killed before its single end-of-run
+        write) is skipped; the present sources still produce a release."""
+        output = str(tmp_path / "out.jsonl")
+        paths = [str(p) for p in tmp_raw_dir.glob("*.jsonl")]
+        paths.append(str(tmp_path / "topic.jsonl"))  # never written
+        count = normalize(paths, output)
+        assert count > 0
+        assert os.path.exists(output)
+
+    def test_all_inputs_missing_fails_quality_gate(self, tmp_path):
+        """If every input is missing there is no data, so the quality gate —
+        not a FileNotFoundError — is what stops the release."""
+        with pytest.raises(QualityGateError):
             normalize([str(tmp_path / "nonexistent.jsonl")], str(tmp_path / "out.jsonl"))
 
     def test_records_have_canonical_repo_urls(self, tmp_raw_dir, tmp_path):
@@ -420,6 +432,85 @@ class TestTombstoneFiltering:
         repo_urls = [r["repo_url"] for r in out_records]
         assert "https://github.com/user/deleted-skill" not in repo_urls
         assert "https://github.com/user/real-skill" in repo_urls
+
+
+class TestMalformedLineTolerance:
+    """A truncated/malformed JSONL line must not abort the whole run.
+
+    In CI each crawler is wrapped in `timeout`; when it is SIGTERM'd mid-write
+    it leaves a partial final line in its raw file. The workflow is designed to
+    "proceed with whatever data was written" and let the >=8,000 quality gate
+    catch wholesale failure -- so normalize() must skip a bad line, not raise.
+    """
+
+    @staticmethod
+    def _good(i):
+        return {
+            "repo_url": f"https://github.com/user/skill-{i}",
+            "name": f"skill-{i}",
+            "description": "A real agent skill with enough content",
+            "source": "skillsmp",
+            "raw_metadata": {
+                "stars": 50,
+                "skill_md_url": f"https://github.com/user/skill-{i}/blob/main/SKILL.md",
+            },
+        }
+
+    def test_truncated_trailing_line_is_skipped(self, tmp_path):
+        """A partial last line (crawler killed mid-write) is skipped, good records survive."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(30):
+                f.write(json.dumps(self._good(i)) + "\n")
+            # Crawler SIGTERM'd mid-write: a truncated JSON object, no newline.
+            f.write('{"repo_url": "https://github.com/user/half", "name": "ha')
+
+        output = str(tmp_path / "out.jsonl")
+        # Must NOT raise on the truncated line.
+        count = normalize([str(raw)], output, min_skills=1)
+
+        out_records = [json.loads(line) for line in open(output) if line.strip()]  # noqa: SIM115
+        names = {r["name"] for r in out_records}
+        assert "skill-0" in names and "skill-29" in names
+        assert count == 30
+
+    def test_malformed_line_logs_warning(self, tmp_path, caplog):
+        """Skipped malformed lines are reported as warnings, not silently dropped."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(30):
+                f.write(json.dumps(self._good(i)) + "\n")
+            f.write("{not valid json}\n")
+
+        output = str(tmp_path / "out.jsonl")
+        with caplog.at_level(logging.WARNING):
+            normalize([str(raw)], output, min_skills=1)
+
+        assert any("malformed" in r.message.lower() for r in caplog.records)
+
+    def test_mostly_corrupt_file_raises(self, tmp_path):
+        """A file that is largely unparseable signals real corruption, not a clipped tail."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            f.write(json.dumps(self._good(0)) + "\n")
+            for _ in range(20):
+                f.write("{garbage not json}\n")
+
+        with pytest.raises(ValueError, match="corrupt"):
+            normalize([str(raw)], str(tmp_path / "out.jsonl"), min_skills=1)
+
+    def test_small_file_with_truncated_tail_does_not_raise(self, tmp_path):
+        """A short crawl (killed early) with a single truncated tail line is a
+        clipped tail, not corruption — the absolute floor keeps it tolerated
+        even though 1/6 lines exceeds the 10% ratio."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(5):
+                f.write(json.dumps(self._good(i)) + "\n")
+            f.write('{"repo_url": "https://github.com/user/half", "name": "ha')
+
+        count = normalize([str(raw)], str(tmp_path / "out.jsonl"), min_skills=1)
+        assert count == 5
 
 
 # ---------------------------------------------------------------------------
