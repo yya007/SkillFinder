@@ -136,3 +136,84 @@ After removing curated-source bypass from `passes_quality_filter()`,
 **File:** `pipeline/normalize.py:28`.
 
 ---
+
+## Performance — Crawl rate-limit efficiency
+
+See `docs/crawler-rate-limit-strategy.md` for the full analysis (where the
+5,000/hr budget goes, the constraint table, and impact/effort per option). The
+current crawl cannot fetch the full corpus within GitHub's limits, which is why
+CI is incremental-only and full builds are local (PRD-005 amendment). Items
+below are ordered by impact ÷ effort.
+
+### ① Fetch SKILL.md via raw.githubusercontent.com (free, not rate-limited)
+**Priority: high**
+`fetch_skill_md` (`crawlers/base.py:903`) pulls each file through the Contents
+API and tries up to 3 branches — 1–3 quota-charged calls per skill, the dominant
+cost. `raw.githubusercontent.com/{repo}/{branch}/{path}` is a CDN that does not
+consume the REST quota. Move the happy path to raw; keep the Contents API only as
+a fallback for symlinks/private repos.
+
+**Files:** `crawlers/base.py` (`fetch_skill_md`).
+
+---
+
+### ② Persist ETags + pushed_at across runs (304 = zero quota)
+**Priority: high**
+`fetch_repo_metadata_with_etag` and `github_get(..., etag=)` already support
+`If-None-Match`, but ETags are never persisted and the bulk path uses the
+non-ETag fetch. Persist `{repo_url: (etag, pushed_at)}` (committed or via
+`actions/cache`); skip unchanged repos by `pushed_at`, else send the ETag for a
+free 304. Makes weekly incrementals near-zero-quota — likely enough to let CI
+crawl incrementally again.
+
+**Files:** `crawlers/base.py` (`fetch_repo_metadata*`, `github_get`), crawler call sites.
+
+---
+
+### ③ Dedup before fetch + shared positive cache
+**Priority: high**
+Five crawlers independently re-fetch overlapping repos; `normalize.py` only
+dedups *after* fetching. Collect candidate repo URLs from all sources → dedup by
+canonical URL → fetch each once, backed by a per-run cache keyed by canonical
+repo URL (a positive counterpart to the existing filter cache).
+
+**Files:** crawler discovery, `crawlers/base.py`, `pipeline/normalize.py`.
+
+---
+
+### ⑥ Monorepos: one recursive tree fetch instead of N Contents calls
+**Priority: medium**
+`git/trees/{sha}?recursive=1` (1 call) enumerates every SKILL.md path in a
+monorepo; fetch each via raw (free, per ①). Replaces 1 Contents call per file.
+
+**Files:** `crawlers/base.py`.
+
+---
+
+### ⑤ Batch repo metadata via GraphQL (≤100 repos/call)
+**Priority: medium**
+Replace per-repo `/repos/{o}/{r}` REST calls with a GraphQL query (stars/
+pushed_at/default_branch) for up to 100 repos at once — ~1–2 points of the
+separate 5,000-point/hr GraphQL pool.
+
+**Files:** `crawlers/base.py` (new GraphQL helper), crawler call sites.
+
+---
+
+### ④ Reduce search/code reliance (the 10/min stall)
+**Priority: medium**
+Cache the discovered repo list; run discovery with date filters
+(`pushed:>last-run`) so search surfaces only new repos. Prefer repo/topic search
+(30/min) over code search (10/min) where possible.
+
+**Files:** `crawlers/skillsmp_crawler.py`, `crawlers/topic_crawler.py`, `crawlers/marketplace_crawler.py`.
+
+---
+
+### ⑦ Raise the ceiling: multiple tokens / GitHub App (fallback)
+**Priority: low**
+REST is 5,000/hr per token; rotating N tokens ≈ N× headroom, a GitHub App
+installation gets 15,000/hr (search stays per-user). Brute force with ops
+overhead — only if ①–⑥ are insufficient.
+
+**Files:** `crawlers/base.py` (session/token rotation).
