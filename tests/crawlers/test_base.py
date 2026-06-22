@@ -23,6 +23,9 @@ from crawlers.base import (
     fetch_skill_md_cached,
     load_content_cache,
     save_content_cache,
+    find_skill_md_paths_cached,
+    load_tree_cache,
+    save_tree_cache,
 )
 
 
@@ -1029,3 +1032,84 @@ class TestFetchSkillMdCached:
             content = fetch_skill_md_cached(MagicMock(), "u/r", "SKILL.md", "", "main", cache)
         assert content == "real"
         mock_fetch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestTreeCache (load_tree_cache / save_tree_cache aliases)
+# ---------------------------------------------------------------------------
+
+class TestTreeCacheAliases:
+    def test_load_tree_cache_returns_empty_for_missing_file(self, tmp_path):
+        result = load_tree_cache(str(tmp_path / "nonexistent.json"))
+        assert result == {}
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        path = str(tmp_path / "tree_cache.json")
+        cache = {"u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "sha1"}}}
+        save_tree_cache(cache, path)
+        result = load_tree_cache(path)
+        assert result == cache
+
+    def test_load_tree_cache_returns_empty_on_corrupt_file(self, tmp_path):
+        p = tmp_path / "corrupt.json"
+        p.write_text("not valid json")
+        result = load_tree_cache(str(p))
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# TestFindSkillMdPathsCached
+# ---------------------------------------------------------------------------
+
+class TestFindSkillMdPathsCached:
+    def test_cache_hit_skips_tree_call(self):
+        """Pre-seeded cache with matching pushed_at → no API call made."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "sha1"}}
+        }
+        with patch("crawlers.base.find_skill_md_paths") as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-01-01T00:00:00Z", tree_cache
+            )
+        assert result == {"SKILL.md": "sha1"}
+        mock_tree.assert_not_called()
+
+    def test_cache_miss_calls_and_stores(self):
+        """Empty cache → calls find_skill_md_paths and stores result."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "sha9"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", tree_cache
+            )
+        assert result == {"SKILL.md": "sha9"}
+        mock_tree.assert_called_once()
+        assert tree_cache["u/r"] == {
+            "pushed_at": "2026-02-02T00:00:00Z",
+            "paths": {"SKILL.md": "sha9"},
+        }
+
+    def test_changed_pushed_at_refetches(self):
+        """Stale pushed_at → refetches and updates cache entry."""
+        tree_cache = {
+            "u/r": {"pushed_at": "2026-01-01T00:00:00Z", "paths": {"SKILL.md": "old_sha"}}
+        }
+        new_paths = {"SKILL.md": "new_sha", "sub/SKILL.md": "abc"}
+        with patch("crawlers.base.find_skill_md_paths", return_value=new_paths) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-03-15T12:00:00Z", tree_cache
+            )
+        mock_tree.assert_called_once()
+        assert result == new_paths
+        assert tree_cache["u/r"]["pushed_at"] == "2026-03-15T12:00:00Z"
+        assert tree_cache["u/r"]["paths"] == new_paths
+
+    def test_empty_pushed_at_always_calls_and_does_not_cache(self):
+        """Falsy pushed_at → always calls API and never caches the result."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={"SKILL.md": "x"}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "", tree_cache
+            )
+        assert result == {"SKILL.md": "x"}
+        mock_tree.assert_called_once()
+        assert tree_cache == {}  # nothing cached

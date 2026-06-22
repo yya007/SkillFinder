@@ -25,6 +25,9 @@ Public API:
   fetch_skill_md_cached()       - Fetch SKILL.md, skipping when blob SHA is cached
   load_content_cache()          - Load persistent blob-SHA -> content cache
   save_content_cache()          - Persist blob-SHA -> content cache
+  find_skill_md_paths_cached()  - Find SKILL.md paths, skipping Trees API when pushed_at is unchanged
+  load_tree_cache()             - Load persistent pushed_at -> {path: sha} tree cache
+  save_tree_cache()             - Persist pushed_at -> {path: sha} tree cache
 """
 
 from __future__ import annotations
@@ -560,6 +563,59 @@ def find_skill_md_paths(session, repo_full_name: str) -> dict[str, str]:
         paths = _find_skill_md_via_search(session, repo_full_name)
 
     return paths
+
+
+def find_skill_md_paths_cached(
+    session,
+    repo_full_name: str,
+    pushed_at: str,
+    tree_cache: dict,
+) -> dict[str, str]:
+    """Return SKILL.md paths for a repo, skipping the Trees API call when unchanged.
+
+    Uses ``pushed_at`` as a freshness key.  If the repo's ``pushed_at`` timestamp
+    matches what is stored in ``tree_cache``, the cached ``{path: sha}`` mapping is
+    returned immediately without any API call.  Otherwise ``find_skill_md_paths`` is
+    called and the result is stored back into ``tree_cache`` (mutated in place).
+
+    An empty or falsy ``pushed_at`` always calls the API and never caches the result
+    because we cannot prove freshness without a timestamp.
+
+    Args:
+        session:        A requests.Session from make_session().
+        repo_full_name: "{owner}/{repo}" string.
+        pushed_at:      The repo's ``pushed_at`` ISO-8601 string from the metadata API.
+                        Pass ``""`` (or any falsy value) to force a live fetch.
+        tree_cache:     Mutable dict that persists across calls within a crawl run.
+                        Shape: ``{repo_full_name: {"pushed_at": str, "paths": dict}}``.
+
+    Returns:
+        Dict mapping SKILL.md path → blob SHA (same contract as ``find_skill_md_paths``).
+    """
+    if pushed_at and tree_cache.get(repo_full_name, {}).get("pushed_at") == pushed_at:
+        return tree_cache[repo_full_name]["paths"]
+
+    paths = find_skill_md_paths(session, repo_full_name)
+    if pushed_at:
+        tree_cache[repo_full_name] = {"pushed_at": pushed_at, "paths": paths}
+    return paths
+
+
+def load_tree_cache(path: str) -> dict:
+    """Load the persistent Trees-API path cache, or {} if absent/corrupt.
+
+    Thin alias for ``load_meta_cache`` — same JSON format, different file.
+    Cache shape: ``{repo_full_name: {"pushed_at": str, "paths": {path: sha}}}``.
+    """
+    return load_meta_cache(path)
+
+
+def save_tree_cache(cache: dict, path: str) -> None:
+    """Persist the Trees-API path cache atomically.
+
+    Thin alias for ``save_meta_cache`` — same atomic-write semantics, different file.
+    """
+    save_meta_cache(cache, path)
 
 
 def _find_skill_md_via_search(session, repo_full_name: str) -> dict[str, str]:
