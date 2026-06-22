@@ -422,6 +422,72 @@ class TestTombstoneFiltering:
         assert "https://github.com/user/real-skill" in repo_urls
 
 
+class TestMalformedLineTolerance:
+    """A truncated/malformed JSONL line must not abort the whole run.
+
+    In CI each crawler is wrapped in `timeout`; when it is SIGTERM'd mid-write
+    it leaves a partial final line in its raw file. The workflow is designed to
+    "proceed with whatever data was written" and let the >=8,000 quality gate
+    catch wholesale failure -- so normalize() must skip a bad line, not raise.
+    """
+
+    @staticmethod
+    def _good(i):
+        return {
+            "repo_url": f"https://github.com/user/skill-{i}",
+            "name": f"skill-{i}",
+            "description": "A real agent skill with enough content",
+            "source": "skillsmp",
+            "raw_metadata": {
+                "stars": 50,
+                "skill_md_url": f"https://github.com/user/skill-{i}/blob/main/SKILL.md",
+            },
+        }
+
+    def test_truncated_trailing_line_is_skipped(self, tmp_path):
+        """A partial last line (crawler killed mid-write) is skipped, good records survive."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(30):
+                f.write(json.dumps(self._good(i)) + "\n")
+            # Crawler SIGTERM'd mid-write: a truncated JSON object, no newline.
+            f.write('{"repo_url": "https://github.com/user/half", "name": "ha')
+
+        output = str(tmp_path / "out.jsonl")
+        # Must NOT raise on the truncated line.
+        count = normalize([str(raw)], output, min_skills=1)
+
+        out_records = [json.loads(line) for line in open(output) if line.strip()]  # noqa: SIM115
+        names = {r["name"] for r in out_records}
+        assert "skill-0" in names and "skill-29" in names
+        assert count == 30
+
+    def test_malformed_line_logs_warning(self, tmp_path, caplog):
+        """Skipped malformed lines are reported as warnings, not silently dropped."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(30):
+                f.write(json.dumps(self._good(i)) + "\n")
+            f.write("{not valid json}\n")
+
+        output = str(tmp_path / "out.jsonl")
+        with caplog.at_level(logging.WARNING):
+            normalize([str(raw)], output, min_skills=1)
+
+        assert any("malformed" in r.message.lower() for r in caplog.records)
+
+    def test_mostly_corrupt_file_raises(self, tmp_path):
+        """A file that is largely unparseable signals real corruption, not a clipped tail."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            f.write(json.dumps(self._good(0)) + "\n")
+            for _ in range(10):
+                f.write("{garbage not json}\n")
+
+        with pytest.raises(ValueError, match="corrupt"):
+            normalize([str(raw)], str(tmp_path / "out.jsonl"), min_skills=1)
+
+
 # ---------------------------------------------------------------------------
 # Quality stats logging
 # ---------------------------------------------------------------------------
