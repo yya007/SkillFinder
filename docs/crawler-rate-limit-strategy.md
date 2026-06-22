@@ -121,8 +121,7 @@ rebuild.
 
 ## Measured impact (2026-06-22)
 
-Options ①②③ were implemented (see the plan under `docs/superpowers/plans/`) and
-measured with `crawlers/eval_cost.py` over `anthropics/skills`,
+Options ①②③ were implemented and measured with `crawlers/eval_cost.py` over `anthropics/skills`,
 `dnakov/claude-skills`, `obra/superpowers` (32 SKILL.md files), one live run.
 "Metered" = REST + code-search (counts against the 5,000/hr quota); "free" =
 `raw.githubusercontent.com` + conditional 304s.
