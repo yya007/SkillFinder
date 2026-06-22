@@ -91,6 +91,21 @@ class TestDiscoverTopicRepos:
         assert result == []
         assert complete is False
 
+    def test_incomplete_results_marks_incomplete(self):
+        """A timed-out search (HTTP 200, incomplete_results=true) → discovery incomplete."""
+        from crawlers.topic_crawler import _discover_topic_repos
+
+        partial = {"items": [{"full_name": "user/skill-a"}], "incomplete_results": True}
+        empty = {"items": [], "incomplete_results": False}
+        session = MagicMock()
+        with patch("crawlers.topic_crawler.github_get") as mock_get:
+            mock_get.side_effect = [partial, empty] * 30
+            result, complete = _discover_topic_repos(session, limit=1000)
+
+        assert "user/skill-a" in result
+        assert complete is False
+        assert complete is False
+
 
 # ---------------------------------------------------------------------------
 # TestTopicCrawlerRun
@@ -696,6 +711,36 @@ class TestWatermarkAdvancement:
 
             out = str(tmp_path / "out.jsonl")
             run(out, limit=1)
+
+        mock_save_state.assert_not_called()
+
+    def test_inner_loop_limit_truncation_does_not_advance_window(self, tmp_path):
+        """When --limit is hit INSIDE a repo's skill loop (a single repo with multiple
+        SKILL.md), truncated must still be set so the watermark does not advance."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            # ONE repo with TWO SKILL.md files, limit=1 → truncates inside the inner loop
+            mock_disc.return_value = (["user/multi-skill"], True)
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1", "sub/SKILL.md": "sha2"}
+            mock_skill_md.return_value = SAMPLE_SKILL_MD
+
+            run(str(tmp_path / "out.jsonl"), limit=1)
 
         mock_save_state.assert_not_called()
 

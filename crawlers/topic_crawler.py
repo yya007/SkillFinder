@@ -141,6 +141,12 @@ def _discover_topic_repos(
                 discovery_complete = False
                 break
 
+            # A timed-out search returns HTTP 200 with incomplete_results=true and a
+            # partial page; the omitted repos would be excluded by the next run's
+            # pushed:> filter, so treat this as an incomplete discovery.
+            if data.get("incomplete_results"):
+                discovery_complete = False
+
             items = data.get("items", [])
             if not items:
                 break
@@ -365,6 +371,9 @@ def run(
 
         for skill_path in skill_md_paths:
             if limit is not None and len(records) >= limit:
+                # Hitting the limit mid-repo leaves this repo's remaining SKILL.md
+                # files unwritten; mark truncated so the watermark won't advance.
+                truncated = True
                 break
 
             skill_md_url = f"{repo_url}/blob/{default_branch}/{skill_path}"
