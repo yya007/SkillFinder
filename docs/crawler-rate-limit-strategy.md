@@ -118,3 +118,46 @@ rebuild.
   `github_get` (②), filter cache → positive cache (③).
 - `crawlers/*_crawler.py` — discovery (④), call sites of the above.
 - `pipeline/normalize.py` — dedup currently happens here, *after* fetch (③).
+
+## Measured impact (2026-06-22)
+
+Options ①②③ were implemented and measured with `crawlers/eval_cost.py` over `anthropics/skills`,
+`dnakov/claude-skills`, `obra/superpowers` (32 SKILL.md files), one live run.
+"Metered" = REST + code-search (counts against the 5,000/hr quota); "free" =
+`raw.githubusercontent.com` + conditional 304s.
+
+| Path | metered/skill | metered calls | free calls | notes |
+|------|--------------:|--------------:|-----------:|-------|
+| Baseline (Contents API) — *derived* | ~1.4 | ~44 | 0 | content fetched via metered Contents API |
+| ① raw content                       | 0.38 | 12 | 32 (raw) | every SKILL.md body now free |
+| ①+②+③ cold (empty caches)           | 0.28 | 9  | 32 (raw) | |
+| ①+②+③ warm (caches primed)          | 0.25 | 8  | 1 (304)  | content fetches 32 → 0 |
+
+The baseline row is **derived, not separately run**: before ①, those 32
+`raw_free` content fetches were Contents-API calls (1–3 each, due to the
+default→main→master branch fallback) and counted against quota. Treating them as
+one metered call apiece gives the conservative ~44 baseline; the true pre-①
+number is higher.
+
+**Findings:**
+
+- **① (raw CDN) is the dominant win** — metered calls/skill fell ~1.4 → 0.38
+  (≈ 3.7× fewer), because every SKILL.md body now comes from the un-metered CDN.
+- **③ (blob-SHA content cache) eliminates re-fetches** — on the warm run all 32
+  SKILL.md were served from cache (`raw_free` 32 → 0): zero content requests, free
+  or otherwise. This is the cross-run / cross-crawler dedup working.
+- **② (ETag metadata) saves on unchanged repos** — back-to-back, 1 of 3 metadata
+  requests returned 304; the other two repos' star counts changed between the two
+  runs, so they re-fetched. On the real weekly cadence (most repos untouched) the
+  304 hit-rate is far higher.
+- **Residual metered cost is path discovery.** `find_skill_md_paths` (the
+  recursive Trees call) is **not** cached, so each repo still costs ~1 metered
+  call per run regardless of the content/metadata caches. So "warm run ≈ zero
+  quota" holds **per skill in dense monorepos**, not **per repo**. Caching the
+  tree by `repo + HEAD commit SHA` (skip the Trees call when HEAD is unchanged)
+  is the natural next step — added to the backlog.
+
+Net: for the steady-state weekly delta the metered cost is now dominated by one
+Trees call per repo plus changed-repo metadata, with all content free — an
+order-of-magnitude improvement over the Contents-API baseline, and enough that
+CI incremental crawling on a sub-IVF corpus becomes plausible again.

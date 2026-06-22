@@ -36,3 +36,8 @@ htmlcov/
 
 # Claude Code local settings (may contain tokens / allowlists)
 .claude/
+
+# Superpowers plans/scratch and agent memory (local-only, not committed)
+superpowers/
+.superpowers/
+memory/

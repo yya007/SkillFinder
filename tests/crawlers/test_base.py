@@ -20,6 +20,9 @@ from crawlers.base import (
     parse_frontmatter,
     save_crawl_state,
     write_jsonl,
+    fetch_skill_md_cached,
+    load_content_cache,
+    save_content_cache,
 )
 
 
@@ -717,6 +720,60 @@ class TestFetchSkillMd:
 
 
 # ---------------------------------------------------------------------------
+# TestFetchSkillMdRaw
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMdRaw:
+    def test_uses_raw_and_skips_api_on_success(self):
+        from crawlers.base import fetch_skill_md
+        raw_body = "---\nname: deploy\ndescription: x\n---\nbody"
+
+        class Resp:
+            status_code = 200
+            text = raw_body
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = Resp()
+        with patch("crawlers.base.github_get") as mock_api:
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content == raw_body
+        mock_api.assert_not_called()              # Contents API never touched
+
+    def test_falls_back_to_api_when_raw_404(self):
+        from crawlers.base import fetch_skill_md
+
+        class Resp404:
+            status_code = 404
+            text = "404: Not Found"
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = Resp404()
+        with patch("crawlers.base.github_get") as mock_api:
+            mock_api.return_value = {"content": "LS0tCm5hbWU6IHkKLS0t"}  # base64 "---\nname: y\n---"
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content is not None and "name: y" in content
+        mock_api.assert_called()                  # fell back to API
+
+    def test_falls_back_to_api_when_raw_looks_like_symlink(self):
+        from crawlers.base import fetch_skill_md
+
+        class RespSymlink:
+            status_code = 200
+            text = "../shared/SKILL.md"          # short, no frontmatter → suspicious
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = RespSymlink()
+        with patch("crawlers.base.github_get") as mock_api:
+            mock_api.return_value = {"content": "LS0tCm5hbWU6IHoKLS0t"}  # "---\nname: z\n---"
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content is not None and "name: z" in content
+        mock_api.assert_called()
+
+
+# ---------------------------------------------------------------------------
 # TestGithubGetRateLimit
 # ---------------------------------------------------------------------------
 
@@ -806,3 +863,169 @@ class TestGithubGetRateLimit:
         )
         wait = _rate_limit_wait_seconds(resp)
         assert 10 <= wait <= 20
+
+
+class TestApiCounters:
+    def test_categorizes_requests_by_kind(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, record_request,
+        )
+        reset_api_counters()
+        record_request("https://api.github.com/repos/a/b", 200)
+        record_request("https://api.github.com/search/code?q=x", 200)
+        record_request("https://raw.githubusercontent.com/a/b/main/SKILL.md", 200)
+        record_request("https://api.github.com/repos/a/b", 304)
+        counters = get_api_counters()
+        assert counters["rest"] == 1
+        assert counters["search"] == 1
+        assert counters["raw_free"] == 1
+        assert counters["conditional_304"] == 1
+
+    def test_reset_zeroes_counters(self):
+        from crawlers.base import reset_api_counters, get_api_counters, record_request
+        record_request("https://api.github.com/repos/a/b", 200)
+        reset_api_counters()
+        assert get_api_counters()["rest"] == 0
+
+    def test_fetch_repo_metadata_with_etag_counts_304(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, fetch_repo_metadata_with_etag,
+        )
+        fake_resp = MagicMock()
+        fake_resp.status_code = 304
+        fake_resp.headers = {"ETag": 'W/"x"'}
+        session = MagicMock()
+        session.get.return_value = fake_resp
+        reset_api_counters()
+        fetch_repo_metadata_with_etag(session, "a/b", 'W/"x"')
+        assert get_api_counters()["conditional_304"] == 1
+
+    def test_fetch_repo_metadata_with_etag_counts_200(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, fetch_repo_metadata_with_etag,
+        )
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.headers = {"ETag": 'W/"y"'}
+        fake_resp.json.return_value = {
+            "stargazers_count": 5, "pushed_at": "2026-01-01T00:00:00Z",
+            "topics": [], "description": "", "default_branch": "main",
+        }
+        session = MagicMock()
+        session.get.return_value = fake_resp
+        reset_api_counters()
+        fetch_repo_metadata_with_etag(session, "a/b", None)
+        assert get_api_counters()["rest"] == 1
+
+    def test_fetch_repo_metadata_with_etag_retries_on_429(self):
+        """fetch_repo_metadata_with_etag must honor rate limits: on 429 it waits
+        and retries, ultimately returning the 200 metadata (regression: the old
+        single-attempt path returned {} on 429 without retrying)."""
+        from crawlers.base import fetch_repo_metadata_with_etag
+
+        resp429 = MagicMock()
+        resp429.status_code = 429
+        resp429.headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "0"}
+
+        resp200 = MagicMock()
+        resp200.status_code = 200
+        resp200.headers = {"ETag": 'W/"v"'}
+        resp200.json.return_value = {
+            "stargazers_count": 5, "pushed_at": "", "topics": [],
+            "description": "", "default_branch": "main",
+        }
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = [resp429, resp200]
+
+        with patch("crawlers.base._wait_for_reset"):  # no-op — no real sleep
+            meta, new_etag = fetch_repo_metadata_with_etag(mock_session, "a/b")
+
+        assert meta["stargazers_count"] == 5, (
+            "Expected successful 200 metadata; got {} — rate-limit retry not implemented"
+        )
+        assert new_etag == 'W/"v"'
+        assert mock_session.get.call_count == 2, (
+            "Expected 2 GET calls (1 retry after 429); got "
+            f"{mock_session.get.call_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestMetaCacheIO
+# ---------------------------------------------------------------------------
+
+class TestMetaCacheIO:
+    def test_roundtrip(self, tmp_path):
+        from crawlers.base import load_meta_cache, save_meta_cache
+        p = str(tmp_path / "repo_meta_cache.json")
+        cache = {"a/b": {"etag": "W/\"x\"", "pushed_at": "2026-01-01T00:00:00Z",
+                          "stargazers_count": 10, "topics": [], "description": "",
+                          "default_branch": "main"}}
+        save_meta_cache(cache, p)
+        assert load_meta_cache(p) == cache
+
+    def test_missing_file_returns_empty_dict(self, tmp_path):
+        from crawlers.base import load_meta_cache
+        assert load_meta_cache(str(tmp_path / "nope.json")) == {}
+
+
+# ---------------------------------------------------------------------------
+# TestFetchRepoMetadataCached
+# ---------------------------------------------------------------------------
+
+class TestFetchRepoMetadataCached:
+    def test_returns_cached_on_304(self):
+        from crawlers.base import fetch_repo_metadata_cached
+        cache = {"a/b": {"etag": "W/\"v1\"", "stargazers_count": 42,
+                         "pushed_at": "2026-01-01T00:00:00Z", "topics": [],
+                         "description": "", "default_branch": "main"}}
+        with patch("crawlers.base.fetch_repo_metadata_with_etag",
+                   return_value=(None, "W/\"v1\"")) as mock_fetch:
+            meta = fetch_repo_metadata_cached(MagicMock(), "a/b", cache)
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args.args[1] == "a/b"      # called with the repo
+        assert mock_fetch.call_args.args[2] == "W/\"v1\""  # ...and its cached etag
+        assert meta["stargazers_count"] == 42             # served from cache, no re-download
+
+    def test_updates_cache_on_200(self):
+        from crawlers.base import fetch_repo_metadata_cached
+        cache = {}
+        fresh = {"stargazers_count": 7, "pushed_at": "2026-02-02T00:00:00Z",
+                 "topics": ["ai"], "description": "d", "default_branch": "main"}
+        with patch("crawlers.base.fetch_repo_metadata_with_etag",
+                   return_value=(fresh, "W/\"v2\"")):
+            meta = fetch_repo_metadata_cached(MagicMock(), "c/d", cache)
+        assert meta["stargazers_count"] == 7
+        assert cache["c/d"]["etag"] == "W/\"v2\""
+        assert cache["c/d"]["stargazers_count"] == 7
+
+
+# ---------------------------------------------------------------------------
+# TestFetchSkillMdCached
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMdCached:
+    def test_cache_hit_skips_fetch(self):
+        cache = {"sha123": "---\nname: cached\n---"}
+        with patch("crawlers.base.fetch_skill_md") as mock_fetch:
+            content = fetch_skill_md_cached(
+                MagicMock(), "u/r", "SKILL.md", "sha123", "main", cache)
+        assert content == "---\nname: cached\n---"
+        mock_fetch.assert_not_called()
+
+    def test_cache_miss_fetches_and_stores(self):
+        cache = {}
+        with patch("crawlers.base.fetch_skill_md", return_value="---\nname: new\n---"):
+            content = fetch_skill_md_cached(
+                MagicMock(), "u/r", "SKILL.md", "sha999", "main", cache)
+        assert content == "---\nname: new\n---"
+        assert cache["sha999"] == "---\nname: new\n---"
+
+    def test_empty_sha_always_fetches(self):
+        # Code-search fallback yields "" SHAs — never cache-key on empty.
+        cache = {"": "WRONG"}
+        with patch("crawlers.base.fetch_skill_md", return_value="real") as mock_fetch:
+            content = fetch_skill_md_cached(MagicMock(), "u/r", "SKILL.md", "", "main", cache)
+        assert content == "real"
+        mock_fetch.assert_called_once()

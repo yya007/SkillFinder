@@ -217,3 +217,14 @@ installation gets 15,000/hr (search stays per-user). Brute force with ops
 overhead — only if ①–⑥ are insufficient.
 
 **Files:** `crawlers/base.py` (session/token rotation).
+
+### ⑥b Cache find_skill_md_paths by repo + HEAD SHA
+**Priority: medium** *(follow-up from the ①②③ impact measurement)*
+After ①②③, the residual metered cost per repo is the recursive Trees call in
+`find_skill_md_paths` (one metered call per repo every run, even when nothing
+changed). Cache the `{path: blob_sha}` result keyed by `repo + HEAD commit SHA`
+(one cheap `fetch_commit_sha` call, or reuse the ETag-cached metadata's known
+HEAD), and skip the Trees call when HEAD is unchanged. This is what makes a warm
+run approach zero metered cost *per repo*, not just per skill.
+
+**Files:** `crawlers/base.py` (`find_skill_md_paths`, `fetch_commit_sha`).

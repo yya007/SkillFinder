@@ -8,6 +8,7 @@ Public API:
   extract_github_url()          - Normalize any URL to a canonical GitHub repo URL
   fetch_repo_metadata()         - Fetch stars/pushed_at/topics/branch for a repo
   fetch_repo_metadata_with_etag() - ETag-aware version; returns (dict|None, etag|None)
+  fetch_repo_metadata_cached()   - Like fetch_repo_metadata_with_etag but with a persistent cache (304 = zero quota)
   fetch_commit_sha()            - Fetch HEAD commit SHA for a repo (one API call)
   find_skill_md_paths()         - Find all SKILL.md paths → {path: blob_sha} dict
   load_filter_cache()           - Load set of filtered-out canonical URLs
@@ -21,12 +22,16 @@ Public API:
   decode_b64_utf8()             - Decode a base64 string to UTF-8
   parse_frontmatter()           - Extract YAML frontmatter from a SKILL.md string
   fetch_skill_md()              - Fetch raw SKILL.md content (rate-limit-aware, symlink-safe)
+  fetch_skill_md_cached()       - Fetch SKILL.md, skipping when blob SHA is cached
+  load_content_cache()          - Load persistent blob-SHA -> content cache
+  save_content_cache()          - Persist blob-SHA -> content cache
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -37,6 +42,42 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
+RAW_BASE = "https://raw.githubusercontent.com"
+
+_api_counter_lock = threading.Lock()
+_API_COUNTERS = {"rest": 0, "search": 0, "raw_free": 0, "conditional_304": 0, "graphql": 0}
+
+
+def reset_api_counters() -> None:
+    """Zero all API-call counters (call at the start of a measured run)."""
+    with _api_counter_lock:
+        for key in _API_COUNTERS:
+            _API_COUNTERS[key] = 0
+
+
+def get_api_counters() -> dict:
+    """Return a snapshot of the API-call counters by category."""
+    with _api_counter_lock:
+        return dict(_API_COUNTERS)
+
+
+def record_request(url: str, status_code: int) -> None:
+    """Categorize one HTTP request for cost accounting.
+
+    304 (conditional) and raw.githubusercontent.com requests are FREE — they do
+    not consume the 5,000/hr REST quota. /search/* is metered at 10-30/min.
+    """
+    with _api_counter_lock:
+        if status_code == 304:
+            _API_COUNTERS["conditional_304"] += 1
+        elif "raw.githubusercontent.com" in url:
+            _API_COUNTERS["raw_free"] += 1
+        elif "/graphql" in url:
+            _API_COUNTERS["graphql"] += 1
+        elif "/search/" in url:
+            _API_COUNTERS["search"] += 1
+        else:
+            _API_COUNTERS["rest"] += 1
 
 
 def _utc_now_iso() -> str:
@@ -161,6 +202,8 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             logger.warning("Network error on %s: %s", url, exc)
             continue
 
+        record_request(url, resp.status_code)
+
         # ETag 304: resource unchanged
         if resp.status_code == 304:
             logger.debug("ETag 304 for %s: not modified", url)
@@ -195,6 +238,7 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             except requests.RequestException as exc:
                 last_exc = exc
                 break
+            record_request(url, resp.status_code)
 
         if resp.status_code == 200:
             # Proactive check: if remaining quota is critically low, sleep
@@ -626,6 +670,31 @@ def add_to_filter_cache(path: str, repo_url: str, reason: str) -> None:
 # GitHub repo metadata
 # ---------------------------------------------------------------------------
 
+def load_meta_cache(path: str) -> dict:
+    """Load the persistent repo-metadata/ETag cache, or {} if absent/corrupt."""
+    import pathlib
+    p = pathlib.Path(path)
+    if not p.exists():
+        return {}
+    try:
+        with p.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_meta_cache(cache: dict, path: str) -> None:
+    """Persist the repo-metadata/ETag cache atomically."""
+    import pathlib
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(cache, fh, ensure_ascii=False)
+    tmp.replace(p)
+
+
 def fetch_repo_metadata(session, repo_full_name: str) -> dict:
     """Fetch metadata for a single repo from the GitHub Repos API.
 
@@ -680,11 +749,29 @@ def fetch_repo_metadata_with_etag(
     if etag:
         headers["If-None-Match"] = etag
 
-    try:
-        resp = session.get(url, headers=headers, timeout=30)
-    except requests.RequestException as exc:
-        logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
-        return {}, None
+    rl_retries = 0
+    while True:
+        try:
+            resp = session.get(url, headers=headers, timeout=30)
+        except requests.RequestException as exc:
+            logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
+            return {}, None
+
+        record_request(url, resp.status_code)
+
+        # Honor rate limits like github_get: wait for reset and retry on 429 or
+        # quota-exhausted 403, bounded by _MAX_RATELIMIT_RETRIES. A 403 with
+        # quota remaining is a permanent error (private/forbidden), not a throttle.
+        if resp.status_code in (429, 403):
+            remaining = int(resp.headers.get("X-RateLimit-Remaining", "1"))
+            if resp.status_code == 403 and remaining > 0:
+                break
+            if rl_retries >= _MAX_RATELIMIT_RETRIES:
+                break
+            _wait_for_reset(resp, label=url)
+            rl_retries += 1
+            continue
+        break
 
     new_etag = resp.headers.get("ETag")
 
@@ -708,6 +795,32 @@ def fetch_repo_metadata_with_etag(
         "description": data.get("description", ""),
         "default_branch": data.get("default_branch", "main"),
     }, new_etag
+
+
+def fetch_repo_metadata_cached(session, repo_full_name: str, cache: dict) -> dict:
+    """Like fetch_repo_metadata, but uses a persistent ETag cache.
+
+    On a 304 (resource unchanged) the cached metadata is returned and NO quota is
+    spent on the body. ``cache`` is mutated in place; persist it with
+    save_meta_cache() after the crawl.
+    """
+    entry = cache.get(repo_full_name, {})
+    etag = entry.get("etag")
+    meta, new_etag = fetch_repo_metadata_with_etag(session, repo_full_name, etag)
+
+    if meta is None:  # 304 Not Modified — reuse cached metadata
+        return {k: v for k, v in entry.items() if k != "etag"}
+
+    if meta:  # 200 — refresh cache
+        cache[repo_full_name] = {
+            "etag": new_etag or "",
+            "pushed_at": meta.get("pushed_at", ""),
+            "stargazers_count": meta.get("stargazers_count", 0),
+            "topics": meta.get("topics", []),
+            "description": meta.get("description", ""),
+            "default_branch": meta.get("default_branch", "main"),
+        }
+    return meta
 
 
 def fetch_commit_sha(session, repo_full_name: str) -> str | None:
@@ -861,7 +974,7 @@ def parse_frontmatter(content: str) -> dict:
         return {}
 
 
-def fetch_skill_md(
+def _fetch_skill_md_via_api(
     session,
     repo_full_name: str,
     path: str = "SKILL.md",
@@ -922,7 +1035,7 @@ def fetch_skill_md(
                 logger.debug(
                     "Symlink at %s in %s → %s", path, repo_full_name, resolved
                 )
-                return fetch_skill_md(
+                return _fetch_skill_md_via_api(
                     session, repo_full_name, resolved, branch, _depth=1
                 )
 
@@ -938,6 +1051,84 @@ def fetch_skill_md(
             continue
 
     return None
+
+
+def _looks_like_skill_file(text: str) -> bool:
+    """True if raw body is plausibly a real SKILL.md (not a symlink target/404)."""
+    if "---" in text:               # has YAML frontmatter delimiter
+        return True
+    return len(text) > 200          # long enough to be real content, not a path
+
+
+def _fetch_skill_md_via_raw(session, repo_full_name, path, default_branch="main") -> str | None:
+    """Fetch SKILL.md from the free raw CDN. Returns None on any non-200 / miss."""
+    branches = [default_branch]
+    for fallback in ("main", "master"):
+        if fallback not in branches:
+            branches.append(fallback)
+    for branch in branches:
+        url = f"{RAW_BASE}/{repo_full_name}/{branch}/{path}"
+        try:
+            resp = session.get(url, timeout=30)
+        except requests.RequestException:
+            continue
+        record_request(url, resp.status_code)
+        if resp.status_code == 200 and _looks_like_skill_file(resp.text):
+            return resp.text
+    return None
+
+
+def fetch_skill_md(
+    session,
+    repo_full_name: str,
+    path: str = "SKILL.md",
+    default_branch: str = "main",
+    _depth: int = 0,
+) -> str | None:
+    """Fetch SKILL.md content, preferring the free raw CDN over the Contents API.
+
+    raw.githubusercontent.com does not consume the 5,000/hr REST quota. The
+    Contents API is used only as a fallback (raw miss, or a body that looks like
+    a symlink target rather than a real skill file), where it also resolves
+    symlinks and private repos.
+    """
+    raw = _fetch_skill_md_via_raw(session, repo_full_name, path, default_branch)
+    if raw is not None:
+        return raw
+    return _fetch_skill_md_via_api(session, repo_full_name, path, default_branch, _depth)
+
+
+def fetch_skill_md_cached(
+    session,
+    repo_full_name: str,
+    path: str,
+    blob_sha: str,
+    default_branch: str,
+    content_cache: dict,
+) -> str | None:
+    """Fetch SKILL.md, reusing cached content when the blob SHA is unchanged.
+
+    A git blob SHA uniquely identifies file content, so a hit means the file is
+    byte-identical to a previously-fetched one (in this repo, another repo, or a
+    prior run) — return it with no network call. Empty SHAs (code-search
+    fallback) are never cached. ``content_cache`` maps blob_sha -> content.
+    """
+    if blob_sha and blob_sha in content_cache:
+        return content_cache[blob_sha]
+    content = fetch_skill_md(session, repo_full_name, path, default_branch)
+    if blob_sha and content is not None:
+        content_cache[blob_sha] = content
+    return content
+
+
+def load_content_cache(path: str) -> dict:
+    """Load the persistent blob-SHA -> content cache, or {} if absent/corrupt."""
+    return load_meta_cache(path)
+
+
+def save_content_cache(cache: dict, path: str) -> None:
+    """Persist the blob-SHA -> content cache atomically."""
+    save_meta_cache(cache, path)
 
 
 def infer_platforms(frontmatter: dict, source: str) -> list[str]:
