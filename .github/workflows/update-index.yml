@@ -80,19 +80,29 @@ jobs:
         run: |
           NEW_COUNT="${{ env.SKILL_COUNT }}"
 
-          # Fetch the latest release body. If no release exists yet, gh exits non-zero.
-          if PREV_BODY=$(gh release view \
+          # Find the latest *index* release. The Releases list also contains npm
+          # releases (v0.1.x) which carry no skill count, so a bare
+          # `gh release view` (latest overall) can return an npm release and make
+          # the parse below fail spuriously — scope explicitly to index-* tags.
+          # index-YYYYMMDD sorts lexicographically in date order.
+          PREV_TAG=$(gh release list \
               --repo "${{ github.repository }}" \
-              --json body -q '.body' 2>/dev/null); then
+              --limit 100 --json tagName -q '.[].tagName' \
+            | grep '^index-' | sort -r | head -1)
+
+          if [ -n "$PREV_TAG" ]; then
             HAS_PREV=true
+            PREV_BODY=$(gh release view "$PREV_TAG" \
+              --repo "${{ github.repository }}" \
+              --json body -q '.body' 2>/dev/null)
             # Parse **Skills indexed:** from the structured release body.
-            # If the field is present but unparseable, fail loudly — this indicates
-            # a release body format change rather than a first-run scenario.
+            # If an index release exists but the field is unparseable, fail
+            # loudly — this indicates a release body format change.
             PREV_COUNT=$(echo "$PREV_BODY" \
               | grep -oP '(?<=\*\*Skills indexed:\*\* )[0-9,]+' \
               | tr -d ',' | head -1)
             if [ -z "$PREV_COUNT" ]; then
-              echo "::error::A previous release exists but the skill count could not be parsed from its body."
+              echo "::error::Index release $PREV_TAG exists but its skill count could not be parsed."
               echo "::error::Expected a line matching '**Skills indexed:** <number>'."
               echo "::error::If the release body format changed, update the grep pattern."
               echo "::error::To bypass, trigger this workflow with force_rebuild=true."
@@ -101,7 +111,7 @@ jobs:
           else
             HAS_PREV=false
             PREV_COUNT=0
-            echo "No previous release found — will perform full rebuild."
+            echo "No previous index release found — will perform full rebuild."
           fi
 
           python3 - <<'PYEOF'
@@ -124,6 +134,9 @@ jobs:
               f.write(f"REBUILD_REASON={reason}\n")
               f.write(f"PREV_COUNT={prev}\n")
           PYEOF
+
+          # Carry the chosen index tag forward for the incremental download step.
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
 
           echo "Strategy: INCREMENTAL=${INCREMENTAL}, REBUILD_REASON=${REBUILD_REASON}"
           echo "Previous count: ${PREV_COUNT} → New count: ${NEW_COUNT}"
@@ -160,7 +173,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/prev-index
-          gh release download \
+          # Download from the specific index release chosen above, not the
+          # latest release overall (which may be an npm release with no asset).
+          gh release download "${{ env.PREV_TAG }}" \
             --pattern "*.tar.gz" \
             --dir /tmp/prev-index \
             --repo "${{ github.repository }}"

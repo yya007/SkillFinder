@@ -26,38 +26,67 @@ import sys
 REPO = os.environ.get("GITHUB_REPOSITORY", "yya007/skill-finder")
 
 
-def get_previous_skill_count() -> int | None:
-    """Read the skill count from the most recent GitHub Release body.
+def latest_index_tag(tags: list[str]) -> str | None:
+    """Return the newest ``index-*`` release tag, or None if there is none.
 
-    Returns None if no previous release exists or the count cannot be parsed.
+    The repo's Releases list mixes data releases (``index-YYYYMMDD``) with npm
+    releases (``v0.1.1``). Only the former carry a skill count, so npm tags must
+    be ignored even when they are more recent. ``index-YYYYMMDD`` sorts
+    lexicographically in chronological order, so a plain max() picks the newest.
     """
+    index_tags = [t for t in tags if t.startswith("index-")]
+    return max(index_tags) if index_tags else None
+
+
+def parse_skill_count(body: str) -> int | None:
+    """Extract the skill count from a release body, or None if absent."""
+    # Match "**Skills indexed:** 14,823" or "Skills indexed: 14823"
+    m = re.search(r"Skills indexed[^0-9]*([0-9,]+)", body)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _gh_json(args: list[str]):
+    """Run a `gh` command expecting JSON on stdout; return parsed JSON or None."""
     try:
         result = subprocess.run(
-            ["gh", "release", "view", "--json", "body", "--repo", REPO],
+            ["gh", *args, "--repo", REPO],
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
-
     if result.returncode != 0:
         return None
-
     try:
-        body = json.loads(result.stdout).get("body", "")
-    except (json.JSONDecodeError, AttributeError):
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
         return None
 
-    # Match "**Skills indexed:** 14,823" or "Skills indexed: 14823"
-    m = re.search(r"Skills indexed[^0-9]*([0-9,]+)", body)
-    if not m:
+
+def get_previous_skill_count() -> int | None:
+    """Read the skill count from the most recent *index* GitHub Release body.
+
+    Scoped to ``index-*`` releases so npm releases (``v0.1.x``), which have no
+    skill count, can never be mistaken for the previous index. Returns None if
+    no index release exists or the count cannot be parsed.
+    """
+    releases = _gh_json(["release", "list", "--json", "tagName"])
+    if not releases:
+        return None
+    tag = latest_index_tag([r.get("tagName", "") for r in releases])
+    if tag is None:
         return None
 
-    try:
-        return int(m.group(1).replace(",", ""))
-    except ValueError:
+    view = _gh_json(["release", "view", tag, "--json", "body"])
+    if not view:
         return None
+    return parse_skill_count(view.get("body", "") or "")
 
 
 def check_regression(
