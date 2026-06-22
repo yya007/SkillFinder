@@ -22,6 +22,9 @@ Public API:
   decode_b64_utf8()             - Decode a base64 string to UTF-8
   parse_frontmatter()           - Extract YAML frontmatter from a SKILL.md string
   fetch_skill_md()              - Fetch raw SKILL.md content (rate-limit-aware, symlink-safe)
+  fetch_skill_md_cached()       - Fetch SKILL.md, skipping when blob SHA is cached
+  load_content_cache()          - Load persistent blob-SHA -> content cache
+  save_content_cache()          - Persist blob-SHA -> content cache
 """
 
 from __future__ import annotations
@@ -1075,6 +1078,39 @@ def fetch_skill_md(
     if raw is not None:
         return raw
     return _fetch_skill_md_via_api(session, repo_full_name, path, default_branch, _depth)
+
+
+def fetch_skill_md_cached(
+    session,
+    repo_full_name: str,
+    path: str,
+    blob_sha: str,
+    default_branch: str,
+    content_cache: dict,
+) -> str | None:
+    """Fetch SKILL.md, reusing cached content when the blob SHA is unchanged.
+
+    A git blob SHA uniquely identifies file content, so a hit means the file is
+    byte-identical to a previously-fetched one (in this repo, another repo, or a
+    prior run) — return it with no network call. Empty SHAs (code-search
+    fallback) are never cached. ``content_cache`` maps blob_sha -> content.
+    """
+    if blob_sha and blob_sha in content_cache:
+        return content_cache[blob_sha]
+    content = fetch_skill_md(session, repo_full_name, path, default_branch)
+    if blob_sha and content is not None:
+        content_cache[blob_sha] = content
+    return content
+
+
+def load_content_cache(path: str) -> dict:
+    """Load the persistent blob-SHA -> content cache, or {} if absent/corrupt."""
+    return load_meta_cache(path)
+
+
+def save_content_cache(cache: dict, path: str) -> None:
+    """Persist the blob-SHA -> content cache atomically."""
+    save_meta_cache(cache, path)
 
 
 def infer_platforms(frontmatter: dict, source: str) -> list[str]:

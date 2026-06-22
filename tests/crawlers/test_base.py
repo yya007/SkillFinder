@@ -20,6 +20,9 @@ from crawlers.base import (
     parse_frontmatter,
     save_crawl_state,
     write_jsonl,
+    fetch_skill_md_cached,
+    load_content_cache,
+    save_content_cache,
 )
 
 
@@ -933,3 +936,33 @@ class TestFetchRepoMetadataCached:
         assert meta["stargazers_count"] == 7
         assert cache["c/d"]["etag"] == "W/\"v2\""
         assert cache["c/d"]["stargazers_count"] == 7
+
+
+# ---------------------------------------------------------------------------
+# TestFetchSkillMdCached
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMdCached:
+    def test_cache_hit_skips_fetch(self):
+        cache = {"sha123": "---\nname: cached\n---"}
+        with patch("crawlers.base.fetch_skill_md") as mock_fetch:
+            content = fetch_skill_md_cached(
+                MagicMock(), "u/r", "SKILL.md", "sha123", "main", cache)
+        assert content == "---\nname: cached\n---"
+        mock_fetch.assert_not_called()
+
+    def test_cache_miss_fetches_and_stores(self):
+        cache = {}
+        with patch("crawlers.base.fetch_skill_md", return_value="---\nname: new\n---"):
+            content = fetch_skill_md_cached(
+                MagicMock(), "u/r", "SKILL.md", "sha999", "main", cache)
+        assert content == "---\nname: new\n---"
+        assert cache["sha999"] == "---\nname: new\n---"
+
+    def test_empty_sha_always_fetches(self):
+        # Code-search fallback yields "" SHAs — never cache-key on empty.
+        cache = {"": "WRONG"}
+        with patch("crawlers.base.fetch_skill_md", return_value="real") as mock_fetch:
+            content = fetch_skill_md_cached(MagicMock(), "u/r", "SKILL.md", "", "main", cache)
+        assert content == "real"
+        mock_fetch.assert_called_once()
