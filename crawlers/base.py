@@ -38,6 +38,7 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
+RAW_BASE = "https://raw.githubusercontent.com"
 
 _api_counter_lock = threading.Lock()
 _API_COUNTERS = {"rest": 0, "search": 0, "raw_free": 0, "conditional_304": 0, "graphql": 0}
@@ -900,7 +901,7 @@ def parse_frontmatter(content: str) -> dict:
         return {}
 
 
-def fetch_skill_md(
+def _fetch_skill_md_via_api(
     session,
     repo_full_name: str,
     path: str = "SKILL.md",
@@ -961,7 +962,7 @@ def fetch_skill_md(
                 logger.debug(
                     "Symlink at %s in %s → %s", path, repo_full_name, resolved
                 )
-                return fetch_skill_md(
+                return _fetch_skill_md_via_api(
                     session, repo_full_name, resolved, branch, _depth=1
                 )
 
@@ -977,6 +978,51 @@ def fetch_skill_md(
             continue
 
     return None
+
+
+def _looks_like_skill_file(text: str) -> bool:
+    """True if raw body is plausibly a real SKILL.md (not a symlink target/404)."""
+    if "---" in text:               # has YAML frontmatter delimiter
+        return True
+    return len(text) > 200          # long enough to be real content, not a path
+
+
+def _fetch_skill_md_via_raw(session, repo_full_name, path, default_branch="main") -> str | None:
+    """Fetch SKILL.md from the free raw CDN. Returns None on any non-200 / miss."""
+    branches = [default_branch]
+    for fallback in ("main", "master"):
+        if fallback not in branches:
+            branches.append(fallback)
+    for branch in branches:
+        url = f"{RAW_BASE}/{repo_full_name}/{branch}/{path}"
+        try:
+            resp = session.get(url, timeout=30)
+        except requests.RequestException:
+            continue
+        record_request(url, resp.status_code)
+        if resp.status_code == 200 and _looks_like_skill_file(resp.text):
+            return resp.text
+    return None
+
+
+def fetch_skill_md(
+    session,
+    repo_full_name: str,
+    path: str = "SKILL.md",
+    default_branch: str = "main",
+    _depth: int = 0,
+) -> str | None:
+    """Fetch SKILL.md content, preferring the free raw CDN over the Contents API.
+
+    raw.githubusercontent.com does not consume the 5,000/hr REST quota. The
+    Contents API is used only as a fallback (raw miss, or a body that looks like
+    a symlink target rather than a real skill file), where it also resolves
+    symlinks and private repos.
+    """
+    raw = _fetch_skill_md_via_raw(session, repo_full_name, path, default_branch)
+    if raw is not None:
+        return raw
+    return _fetch_skill_md_via_api(session, repo_full_name, path, default_branch, _depth)
 
 
 def infer_platforms(frontmatter: dict, source: str) -> list[str]:

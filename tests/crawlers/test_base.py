@@ -717,6 +717,60 @@ class TestFetchSkillMd:
 
 
 # ---------------------------------------------------------------------------
+# TestFetchSkillMdRaw
+# ---------------------------------------------------------------------------
+
+class TestFetchSkillMdRaw:
+    def test_uses_raw_and_skips_api_on_success(self):
+        from crawlers.base import fetch_skill_md
+        raw_body = "---\nname: deploy\ndescription: x\n---\nbody"
+
+        class Resp:
+            status_code = 200
+            text = raw_body
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = Resp()
+        with patch("crawlers.base.github_get") as mock_api:
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content == raw_body
+        mock_api.assert_not_called()              # Contents API never touched
+
+    def test_falls_back_to_api_when_raw_404(self):
+        from crawlers.base import fetch_skill_md
+
+        class Resp404:
+            status_code = 404
+            text = "404: Not Found"
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = Resp404()
+        with patch("crawlers.base.github_get") as mock_api:
+            mock_api.return_value = {"content": "LS0tCm5hbWU6IHkKLS0t"}  # base64 "---\nname: y\n---"
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content is not None and "name: y" in content
+        mock_api.assert_called()                  # fell back to API
+
+    def test_falls_back_to_api_when_raw_looks_like_symlink(self):
+        from crawlers.base import fetch_skill_md
+
+        class RespSymlink:
+            status_code = 200
+            text = "../shared/SKILL.md"          # short, no frontmatter → suspicious
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = RespSymlink()
+        with patch("crawlers.base.github_get") as mock_api:
+            mock_api.return_value = {"content": "LS0tCm5hbWU6IHoKLS0t"}  # "---\nname: z\n---"
+            content = fetch_skill_md(mock_session, "user/repo", "SKILL.md", "main")
+
+        assert content is not None and "name: z" in content
+        mock_api.assert_called()
+
+
+# ---------------------------------------------------------------------------
 # TestGithubGetRateLimit
 # ---------------------------------------------------------------------------
 
