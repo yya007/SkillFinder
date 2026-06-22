@@ -1,23 +1,26 @@
 name: Update Skill Index
 
+# Incremental-only. A from-scratch full crawl cannot run here: all crawlers
+# share the single Actions GITHUB_TOKEN (5,000 REST req/hr, ~10/min code-search),
+# so fetching the ~37k-skill corpus needs many hours of quota — far beyond any
+# runner budget. Full index builds are therefore done LOCALLY and published
+# manually (see skills/update-index + docs/prd/PRD-005). This job only *appends*
+# newly-discovered skills to the latest index release, and gracefully no-ops
+# (green) when that is not possible — e.g. the production index is an
+# IndexIVFScalarQuantizer (>= 30k vectors) whose centroids cannot be updated
+# incrementally, so it can only be refreshed by a local full rebuild.
+
 on:
   schedule:
     - cron: '0 6 * * 1'   # Every Monday at 06:00 UTC
   workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: 'Force full rebuild (skip incremental optimisation)'
-        type: boolean
-        default: false
 
 jobs:
-  build-index:
+  incremental-update:
     runs-on: ubuntu-latest
-    # A full rebuild (the only option above ~30k skills — incremental requires
-    # an IVF-incompatible flat index) embeds the entire corpus via Ollama on a
-    # 2-core runner, which alone can take 2+ hours on top of the crawl. The old
-    # 90-minute cap killed every run mid-crawl. GitHub's hard ceiling is 360.
-    timeout-minutes: 300
+    # Incremental embed is small (only new skills), so the multi-hour full-embed
+    # budget is gone. Per-crawler timeouts keep the crawl bounded well under this.
+    timeout-minutes: 60
     permissions:
       contents: write   # needed to publish GitHub Releases
 
@@ -32,209 +35,142 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      # ── Phase 1: Crawl all registries in parallel ─────────────────────────
-      # Each crawler is wrapped in `timeout` and `|| echo` so a single hung or
-      # failing source can never stall `wait` (the cause of the 90-min CI
-      # hangs) — the pipeline proceeds with whatever data was written, and the
-      # post-crawl quality gate (≥ 8,000 skills) catches a wholesale failure.
-      - name: Crawl all sources (parallel)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p data/raw
-          timeout 45m python -m crawlers.skillsmp_crawler    -o data/raw/skillsmp.jsonl    || echo "::warning::skillsmp crawler exited $?" &
-          timeout 45m python -m crawlers.clawhub_crawler     -o data/raw/clawhub.jsonl     || echo "::warning::clawhub crawler exited $?" &
-          timeout 45m python -m crawlers.skillhub_crawler    -o data/raw/skillhub.jsonl    || echo "::warning::skillhub crawler exited $?" &
-          timeout 45m python -m crawlers.marketplace_crawler -o data/raw/marketplace.jsonl || echo "::warning::marketplace crawler exited $?" &
-          timeout 45m python -m crawlers.topic_crawler       -o data/raw/topic.jsonl --data-dir data/raw || echo "::warning::topic crawler exited $?" &
-          wait
-          echo "Crawl record counts:"
-          for f in data/raw/*.jsonl; do echo "  $(wc -l < "$f") $(basename "$f")"; done
-
-      # ── Phase 2: Normalize and deduplicate ────────────────────────────────
-      - name: Normalize and deduplicate
-        run: |
-          python pipeline/normalize.py \
-            data/raw/skillsmp.jsonl data/raw/clawhub.jsonl \
-            data/raw/skillhub.jsonl data/raw/marketplace.jsonl \
-            data/raw/topic.jsonl \
-            -o data/unified_skills.jsonl
-
-      # ── Phase 3: Pre-embed quality gate ───────────────────────────────────
-      - name: Quality gate — minimum skill count (≥ 8,000)
-        run: |
-          COUNT=$(wc -l < data/unified_skills.jsonl)
-          echo "Normalized skill count: $COUNT"
-          if [ "$COUNT" -lt 8000 ]; then
-            echo "::error::Quality gate failed: only $COUNT skills (need ≥ 8000)"
-            exit 1
-          fi
-          echo "SKILL_COUNT=$COUNT" >> "$GITHUB_ENV"
-
-      # ── Phase 4: Decide rebuild strategy ──────────────────────────────────
-      # Incremental: delta < 20% AND force_rebuild is false
-      # Full rebuild: delta ≥ 20%, no previous release, or force_rebuild=true
-      - name: Decide rebuild strategy
+      # ── Locate the index release to update ────────────────────────────────
+      # Scope to index-* tags; npm releases (v0.1.x) carry no index asset.
+      - name: Find latest index release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          NEW_COUNT="${{ env.SKILL_COUNT }}"
-
-          # Find the latest *index* release. The Releases list also contains npm
-          # releases (v0.1.x) which carry no skill count, so a bare
-          # `gh release view` (latest overall) can return an npm release and make
-          # the parse below fail spuriously — scope explicitly to index-* tags.
-          # index-YYYYMMDD sorts lexicographically in date order.
           PREV_TAG=$(gh release list \
               --repo "${{ github.repository }}" \
               --limit 100 --json tagName -q '.[].tagName' \
             | grep '^index-' | sort -r | head -1)
-
-          if [ -n "$PREV_TAG" ]; then
-            HAS_PREV=true
-            PREV_BODY=$(gh release view "$PREV_TAG" \
-              --repo "${{ github.repository }}" \
-              --json body -q '.body' 2>/dev/null)
-            # Parse **Skills indexed:** from the structured release body.
-            # If an index release exists but the field is unparseable, fail
-            # loudly — this indicates a release body format change.
-            PREV_COUNT=$(echo "$PREV_BODY" \
-              | grep -oP '(?<=\*\*Skills indexed:\*\* )[0-9,]+' \
-              | tr -d ',' | head -1)
-            if [ -z "$PREV_COUNT" ]; then
-              echo "::error::Index release $PREV_TAG exists but its skill count could not be parsed."
-              echo "::error::Expected a line matching '**Skills indexed:** <number>'."
-              echo "::error::If the release body format changed, update the grep pattern."
-              echo "::error::To bypass, trigger this workflow with force_rebuild=true."
-              exit 1
-            fi
+          if [ -z "$PREV_TAG" ]; then
+            echo "::notice::No index-* release exists yet. Seed a full index locally and publish it first (see skills/update-index); incremental CI has nothing to update."
+            echo "SKIP=true" >> "$GITHUB_ENV"
           else
-            HAS_PREV=false
-            PREV_COUNT=0
-            echo "No previous index release found — will perform full rebuild."
+            echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+            echo "Updating on top of $PREV_TAG"
           fi
 
-          python3 - <<'PYEOF'
-          import os
-          prev = int("$PREV_COUNT")
-          new  = int("$NEW_COUNT")
-          force = "${{ inputs.force_rebuild }}" == "true"
-
-          if prev == 0 or force:
-              incremental = False
-              reason = "no_previous_release" if prev == 0 else "force_rebuild_requested"
-          else:
-              delta = abs(new - prev) / prev
-              incremental = delta < 0.20
-              reason = f"delta_{delta*100:.1f}pct_lt_20pct" if incremental \
-                       else f"delta_{delta*100:.1f}pct_gte_20pct"
-
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"INCREMENTAL={'true' if incremental else 'false'}\n")
-              f.write(f"REBUILD_REASON={reason}\n")
-              f.write(f"PREV_COUNT={prev}\n")
-          PYEOF
-
-          # Carry the chosen index tag forward for the incremental download step.
-          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
-
-          echo "Strategy: INCREMENTAL=${INCREMENTAL}, REBUILD_REASON=${REBUILD_REASON}"
-          echo "Previous count: ${PREV_COUNT} → New count: ${NEW_COUNT}"
-
-      # ── Phase 5: Install Ollama (shared by both paths) ────────────────────
-      - name: Cache Ollama model
-        uses: actions/cache@v4
-        with:
-          path: ~/.ollama/models
-          key: ollama-qwen3-embedding-0.6b
-
-      - name: Install Ollama and pull embedding model
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve &
-          echo "Waiting for Ollama to become ready..."
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-              echo "Ollama ready after ${i}s."
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "::error::Ollama did not become ready within 30 seconds."
-              exit 1
-            fi
-            sleep 1
-          done
-          ollama pull qwen3-embedding:0.6b
-
-      # ── Phase 6a: Incremental path ────────────────────────────────────────
-      - name: Download previous index (incremental only)
-        if: env.INCREMENTAL == 'true'
+      - name: Download previous index
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/prev-index
-          # Download from the specific index release chosen above, not the
-          # latest release overall (which may be an npm release with no asset).
+          mkdir -p data
           gh release download "${{ env.PREV_TAG }}" \
             --pattern "*.tar.gz" \
             --dir /tmp/prev-index \
             --repo "${{ github.repository }}"
           tar -xzf /tmp/prev-index/*.tar.gz -C data/
-          echo "Previous index extracted: $(wc -l < data/metadata.jsonl) skills"
+          echo "Previous index: $(wc -l < data/metadata.jsonl) skills"
 
-      - name: Incremental embed and append
-        if: env.INCREMENTAL == 'true'
+      # ── Bail out (green) when the index can't be appended to ──────────────
+      # IndexIVFScalarQuantizer (>= IVF_THRESHOLD vectors) has trained centroids
+      # that cannot accept incremental adds. This is the steady state for the
+      # production corpus, so this job is a deliberate no-op until a local full
+      # rebuild lowers the count or the index type changes.
+      - name: Check index supports incremental append
+        if: env.SKIP != 'true'
         run: |
+          NTOTAL=$(python -c "import faiss; print(faiss.read_index('data/index.faiss').ntotal)")
+          THRESHOLD=$(python -c "from pipeline.build_index import IVF_THRESHOLD; print(IVF_THRESHOLD)")
+          echo "Index has $NTOTAL vectors (IVF threshold: $THRESHOLD)"
+          if [ "$NTOTAL" -ge "$THRESHOLD" ]; then
+            echo "::notice::Index has $NTOTAL vectors (>= $THRESHOLD): an IVF index whose centroids cannot be updated incrementally. Refresh it with a local full rebuild (see skills/update-index). Skipping."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          fi
+
+      # ── Incremental crawl: discover repos new since the last index ────────
+      # Best-effort under CI rate limits; each crawler is bounded by `timeout`
+      # and `|| echo` so one slow/hung source can never stall `wait`. Only the
+      # subset not already in the index is embedded and appended below.
+      - name: Crawl new skills (incremental)
+        if: env.SKIP != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data/raw
+          timeout 20m python -m crawlers.skillsmp_crawler    -o data/raw/skillsmp.jsonl    --mode discover || echo "::warning::skillsmp crawler exited $?" &
+          timeout 20m python -m crawlers.clawhub_crawler     -o data/raw/clawhub.jsonl     --mode discover || echo "::warning::clawhub crawler exited $?" &
+          timeout 20m python -m crawlers.skillhub_crawler    -o data/raw/skillhub.jsonl    --mode discover || echo "::warning::skillhub crawler exited $?" &
+          timeout 20m python -m crawlers.marketplace_crawler -o data/raw/marketplace.jsonl --mode discover || echo "::warning::marketplace crawler exited $?" &
+          timeout 20m python -m crawlers.topic_crawler       -o data/raw/topic.jsonl --data-dir data/raw --mode discover || echo "::warning::topic crawler exited $?" &
+          wait
+          echo "Crawl record counts:"
+          for f in data/raw/*.jsonl; do echo "  $(wc -l < "$f") $(basename "$f")"; done
+
+      - name: Normalize and deduplicate
+        if: env.SKIP != 'true'
+        run: |
+          python pipeline/normalize.py \
+            data/raw/skillsmp.jsonl data/raw/clawhub.jsonl \
+            data/raw/skillhub.jsonl data/raw/marketplace.jsonl \
+            data/raw/topic.jsonl \
+            -o data/unified_skills.jsonl \
+            --min-skills 1
+
+      - name: Install Ollama and pull embedding model
+        if: env.SKIP != 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then break; fi
+            if [ "$i" -eq 30 ]; then echo "::error::Ollama did not start"; exit 1; fi
+            sleep 1
+          done
+          ollama pull qwen3-embedding:0.6b
+
+      # ── Embed only the new skills and append them to the index ────────────
+      # incremental_update.py exits 2 if the index can't be appended to (a race
+      # with the size check above, or a model mismatch); treat that as a no-op.
+      - name: Incremental embed and append
+        if: env.SKIP != 'true'
+        run: |
+          set +e
           python pipeline/incremental_update.py \
             --new-skills data/unified_skills.jsonl \
             --index      data/index.faiss \
             --metadata   data/metadata.jsonl \
             --version    data/version.txt
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "::notice::Incremental append not supported for this index — full rebuild required (done locally). Skipping."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          echo "FINAL_COUNT=$(wc -l < data/metadata.jsonl)" >> "$GITHUB_ENV"
 
-      # ── Phase 6b: Full rebuild path ───────────────────────────────────────
-      - name: Full embed (all skills via Ollama)
-        if: env.INCREMENTAL == 'false'
-        run: |
-          python pipeline/embed.py \
-            --input              data/unified_skills.jsonl \
-            --output-embeddings  data/embeddings.npy \
-            --output-ordered     data/unified_skills_ordered.jsonl
-
-      - name: Build FAISS index (full rebuild)
-        if: env.INCREMENTAL == 'false'
-        run: |
-          python pipeline/build_index.py \
-            --embeddings  data/embeddings.npy \
-            --skills      data/unified_skills_ordered.jsonl \
-            --out-index   data/index.faiss \
-            --out-meta    data/metadata.jsonl \
-            --out-version data/version.txt \
-            --embed-model qwen3-embedding:0.6b
-
-      # ── Phase 7: Post-build quality gate ──────────────────────────────────
-      - name: Quality gate — count regression check (≤ 20% drop)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python pipeline/check_regression.py
-
-      # ── Phase 8: Package ──────────────────────────────────────────────────
+      # ── Publish only if skills were actually added ────────────────────────
       - name: Package artifact
+        if: env.SKIP != 'true'
         run: |
+          PREV=$(echo "${{ env.PREV_TAG }}" | sed 's/^index-//')
+          NEW_COUNT="${{ env.FINAL_COUNT }}"
+          # No-op if the count did not change (no new skills appended).
+          PREV_COUNT=$(tar -xzOf /tmp/prev-index/*.tar.gz data/metadata.jsonl 2>/dev/null | wc -l || echo 0)
+          if [ "$NEW_COUNT" = "$PREV_COUNT" ]; then
+            echo "::notice::No new skills appended ($NEW_COUNT unchanged). Nothing to publish."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
           DATE=$(date +%Y%m%d)
           ARTIFACT="skill-finder-index-${DATE}.tar.gz"
-          tar -czf "$ARTIFACT" \
-            data/index.faiss data/metadata.jsonl data/version.txt
+          tar -czf "$ARTIFACT" data/index.faiss data/metadata.jsonl data/version.txt
           SHA=$(sha256sum "$ARTIFACT" | awk '{print $1}')
-          FINAL_COUNT=$(wc -l < data/metadata.jsonl)
           {
             echo "ARTIFACT=$ARTIFACT"
             echo "SHA256=$SHA"
             echo "DATE=$DATE"
-            echo "FINAL_COUNT=$FINAL_COUNT"
+            echo "PREV_COUNT=$PREV_COUNT"
           } >> "$GITHUB_ENV"
 
-      # ── Phase 9: Publish GitHub Release ───────────────────────────────────
       - name: Publish GitHub Release
+        if: env.SKIP != 'true'
         uses: softprops/action-gh-release@b25b93d384199fc0fc8c2e126b2d937a0cbeb2ae  # v2
         with:
           tag_name: index-${{ env.DATE }}
@@ -242,7 +178,7 @@ jobs:
           body: |
             ## Skill Index ${{ env.DATE }}
 
-            **Build type:** ${{ env.INCREMENTAL == 'true' && 'Incremental (append-only)' || 'Full rebuild' }} — ${{ env.REBUILD_REASON }}
+            **Build type:** Incremental (append-only) — CI
             **Skills indexed:** ${{ env.FINAL_COUNT }}
             **Previous count:** ${{ env.PREV_COUNT }}
             **SHA256:** `${{ env.SHA256 }}`
@@ -255,12 +191,11 @@ jobs:
           files: ${{ env.ARTIFACT }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Phase 10: Prune old releases (keep latest 3) ──────────────────────
       - name: Delete old releases (keep latest 3)
+        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # List all index-* releases sorted newest first, skip the 3 we want to keep
           gh release list \
             --repo "${{ github.repository }}" \
             --limit 100 \
