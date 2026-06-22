@@ -353,8 +353,20 @@ class TestNormalize:
         with pytest.raises(QualityGateError):
             normalize([str(p) for p in tmp_raw_dir.glob("*.jsonl")], output, min_skills=99999)
 
-    def test_raises_file_not_found_for_missing_input(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+    def test_skips_missing_input_file(self, tmp_raw_dir, tmp_path):
+        """A missing input (e.g. a crawler killed before its single end-of-run
+        write) is skipped; the present sources still produce a release."""
+        output = str(tmp_path / "out.jsonl")
+        paths = [str(p) for p in tmp_raw_dir.glob("*.jsonl")]
+        paths.append(str(tmp_path / "topic.jsonl"))  # never written
+        count = normalize(paths, output)
+        assert count > 0
+        assert os.path.exists(output)
+
+    def test_all_inputs_missing_fails_quality_gate(self, tmp_path):
+        """If every input is missing there is no data, so the quality gate —
+        not a FileNotFoundError — is what stops the release."""
+        with pytest.raises(QualityGateError):
             normalize([str(tmp_path / "nonexistent.jsonl")], str(tmp_path / "out.jsonl"))
 
     def test_records_have_canonical_repo_urls(self, tmp_raw_dir, tmp_path):
@@ -481,11 +493,24 @@ class TestMalformedLineTolerance:
         raw = tmp_path / "raw.jsonl"
         with raw.open("w") as f:
             f.write(json.dumps(self._good(0)) + "\n")
-            for _ in range(10):
+            for _ in range(20):
                 f.write("{garbage not json}\n")
 
         with pytest.raises(ValueError, match="corrupt"):
             normalize([str(raw)], str(tmp_path / "out.jsonl"), min_skills=1)
+
+    def test_small_file_with_truncated_tail_does_not_raise(self, tmp_path):
+        """A short crawl (killed early) with a single truncated tail line is a
+        clipped tail, not corruption — the absolute floor keeps it tolerated
+        even though 1/6 lines exceeds the 10% ratio."""
+        raw = tmp_path / "raw.jsonl"
+        with raw.open("w") as f:
+            for i in range(5):
+                f.write(json.dumps(self._good(i)) + "\n")
+            f.write('{"repo_url": "https://github.com/user/half", "name": "ha')
+
+        count = normalize([str(raw)], str(tmp_path / "out.jsonl"), min_skills=1)
+        assert count == 5
 
 
 # ---------------------------------------------------------------------------

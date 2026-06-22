@@ -362,10 +362,10 @@ def normalize(
         Number of records written to output_path.
 
     Raises:
-        FileNotFoundError: if any path in raw_paths does not exist.
-        ValueError:        if an input file is mostly malformed JSON (> 10% of
-                           lines), indicating corruption rather than a clipped
-                           tail. Isolated bad lines are skipped with a warning.
+        ValueError:        if an input file is mostly malformed JSON (> 5 bad
+                           lines and > 10%), indicating corruption rather than a
+                           clipped tail. Isolated bad lines, and inputs that do
+                           not exist, are skipped with a warning.
         QualityGateError:  if the output record count is below min_skills.
     """
     # ------------------------------------------------------------------ load
@@ -376,7 +376,12 @@ def normalize(
     for path in raw_paths:
         p = Path(path)
         if not p.exists():
-            raise FileNotFoundError(f"Input file not found: {path}")
+            # A crawler killed mid-run (the topic and clawhub crawlers write
+            # their output only once, at the end) leaves its file unwritten.
+            # Skip it rather than aborting — same best-effort contract as below.
+            # If *every* input is missing the >=min_skills quality gate fails.
+            logger.warning("Input file not found, skipping: %s", path)
+            continue
         # Tolerate malformed lines rather than aborting the whole run. In CI
         # each crawler is wrapped in `timeout`; a SIGTERM mid-write leaves a
         # truncated final line, and the pipeline is designed to "proceed with
@@ -425,7 +430,9 @@ def normalize(
                 "%s: skipped %d/%d malformed lines (%.1f%%)",
                 path, file_malformed, file_lines, ratio * 100,
             )
-            if ratio > 0.10:
+            # Require both an absolute floor and a high ratio: a couple of bad
+            # lines in a short crawl is still just a clipped tail, not corruption.
+            if file_malformed > 5 and ratio > 0.10:
                 raise ValueError(
                     f"{path}: {file_malformed}/{file_lines} lines "
                     f"({ratio * 100:.1f}%) are malformed JSON — file looks "
