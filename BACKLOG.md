@@ -80,9 +80,9 @@ declare `"skillfinder": true` in package.json / pyproject.toml).
 
 ### Add CI cleanup steps on workflow failure
 **Priority: low** *(review issue 14)*
-Staging directories (`/tmp/prev-index`, `data/.new/`) are not pruned when a CI
-phase fails mid-run. On a retry, stale cached files can cause confusing behavior.
-Add a cleanup step with `if: always()`.
+`/tmp/prev-index` (the downloaded previous index) is not pruned when a CI phase
+fails mid-run. On a retry, stale cached files can cause confusing behavior. Add a
+cleanup step with `if: always()`.
 
 **File:** `.github/workflows/update-index.yml`.
 
@@ -139,75 +139,36 @@ After removing curated-source bypass from `passes_quality_filter()`,
 
 ## Performance — Crawl rate-limit efficiency
 
-See `docs/crawler-rate-limit-strategy.md` for the full analysis (where the
-5,000/hr budget goes, the constraint table, and impact/effort per option). The
-current crawl cannot fetch the full corpus within GitHub's limits, which is why
-CI is incremental-only and full builds are local (PRD-005 amendment). Items
-below are ordered by impact ÷ effort.
+Full analysis: `docs/crawler-rate-limit-strategy.md`. CI is incremental-only and
+full builds are local (PRD-005 amendment).
 
-### ① Fetch SKILL.md via raw.githubusercontent.com (free, not rate-limited)
-**Priority: high**
-`fetch_skill_md` (`crawlers/base.py:903`) pulls each file through the Contents
-API and tries up to 3 branches — 1–3 quota-charged calls per skill, the dominant
-cost. `raw.githubusercontent.com/{repo}/{branch}/{path}` is a CDN that does not
-consume the REST quota. Move the happy path to raw; keep the Contents API only as
-a fallback for symlinks/private repos.
+**Shipped (#63, #64):** ① raw.githubusercontent content fetch, ② ETag metadata
+cache, ③ blob-SHA content cache, ⑤ GraphQL metadata batch, ⑥/⑥b recursive-tree
+cache. Eval harness: `crawlers/eval_cost.py`. ① applies to every crawler (shared
+`fetch_skill_md`); ②③⑤⑥b are wired into `topic_crawler` only so far.
 
-**Files:** `crawlers/base.py` (`fetch_skill_md`).
-
----
-
-### ② Persist ETags + pushed_at across runs (304 = zero quota)
-**Priority: high**
-`fetch_repo_metadata_with_etag` and `github_get(..., etag=)` already support
-`If-None-Match`, but ETags are never persisted and the bulk path uses the
-non-ETag fetch. Persist `{repo_url: (etag, pushed_at)}` (committed or via
-`actions/cache`); skip unchanged repos by `pushed_at`, else send the ETag for a
-free 304. Makes weekly incrementals near-zero-quota — likely enough to let CI
-crawl incrementally again.
-
-**Files:** `crawlers/base.py` (`fetch_repo_metadata*`, `github_get`), crawler call sites.
-
----
-
-### ③ Dedup before fetch + shared positive cache
-**Priority: high**
-Five crawlers independently re-fetch overlapping repos; `normalize.py` only
-dedups *after* fetching. Collect candidate repo URLs from all sources → dedup by
-canonical URL → fetch each once, backed by a per-run cache keyed by canonical
-repo URL (a positive counterpart to the existing filter cache).
-
-**Files:** crawler discovery, `crawlers/base.py`, `pipeline/normalize.py`.
-
----
-
-### ⑥ Monorepos: one recursive tree fetch instead of N Contents calls
+### Wire the ②③⑤⑥b caches into the other four crawlers
 **Priority: medium**
-`git/trees/{sha}?recursive=1` (1 call) enumerates every SKILL.md path in a
-monorepo; fetch each via raw (free, per ①). Replaces 1 Contents call per file.
+skillsmp/clawhub/skillhub/marketplace still call the non-cached base functions
+(`fetch_repo_metadata`, `find_skill_md_paths`, `fetch_skill_md`), so they only get
+① (free content). Route them through `fetch_repo_metadata_batch` /
+`fetch_repo_metadata_cached` / `find_skill_md_paths_cached` / `fetch_skill_md_cached`
+the way `topic_crawler` does, to get the metadata/tree/content cache savings.
 
-**Files:** `crawlers/base.py`.
-
----
-
-### ⑤ Batch repo metadata via GraphQL (≤100 repos/call) — DONE
-**Done.** `fetch_repo_metadata_batch` in `crawlers/base.py` fetches
-stars/pushedAt/defaultBranch/topics for ≤100 repos per GraphQL POST (separate
-5,000-point/hr pool); wired into the topic crawler with a per-repo REST fallback.
+**Files:** `crawlers/{skillsmp,clawhub,skillhub,marketplace}_crawler.py`.
 
 ---
 
-### ④ Reduce search/code reliance (the 10/min stall) — REVERTED, needs redesign
-**Status: attempted and reverted.** The date-filter approach
-(`topic:X pushed:>last-run`) is **unsound for topic discovery**: a repo that
-*adds a skill topic without a new commit* keeps its old `pushed_at`, so it is
-filtered out and the advancing watermark makes it permanently undiscoverable —
-and GitHub search has no "topic-added-since" qualifier. A correct incremental
-discovery needs a different mechanism (e.g. enumerate the full topic result set
-each run and diff against a persisted repo-list, never a `pushed_at` watermark),
-or accept that discovery search is cheap enough (repo-search is 30/min, never the
-bottleneck) and leave it full. For code-search-heavy crawlers (skillsmp shards),
-the separate lever is to lean on repo-search over code-search where possible.
+### ④ Incremental topic discovery — needs a sound design (date-filter reverted)
+**Status: attempted and reverted (#64).** `topic:X pushed:>last-run` is **unsound
+for topic discovery**: a repo that *adds a skill topic without a new commit* keeps
+its old `pushed_at`, so it is filtered out and the advancing watermark makes it
+permanently undiscoverable — and GitHub search has no "topic-added-since"
+qualifier. A correct incremental discovery must enumerate the full topic result
+set each run and diff against a persisted repo-list (never a `pushed_at`
+watermark). Topic discovery is currently left full (repo-search at 30/min was
+never the bottleneck). For code-search-heavy crawlers (skillsmp shards), the
+separate lever is preferring repo-search over code-search.
 
 **Files:** `crawlers/skillsmp_crawler.py`, `crawlers/marketplace_crawler.py`.
 
@@ -217,14 +178,6 @@ the separate lever is to lean on repo-search over code-search where possible.
 **Priority: low**
 REST is 5,000/hr per token; rotating N tokens ≈ N× headroom, a GitHub App
 installation gets 15,000/hr (search stays per-user). Brute force with ops
-overhead — only if ①–⑥ are insufficient.
+overhead — only if the caches above are insufficient.
 
 **Files:** `crawlers/base.py` (session/token rotation).
-
-### ⑥b Cache find_skill_md_paths — DONE
-**Done.** `find_skill_md_paths_cached` in `crawlers/base.py` skips the recursive
-Trees call when a repo's `(pushed_at, default_branch)` is unchanged, reusing the
-cached `{path: blob_sha}` map (keyed on default branch because a branch change
-re-resolves `HEAD` to a different tree without bumping `pushed_at`; empty/failed
-lookups are never cached). Wired into the topic crawler. Makes a warm run
-approach zero metered cost *per unchanged repo*.
