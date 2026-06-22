@@ -1,6 +1,6 @@
 {
   "name": "@yya007/skill-finder",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Universal agent skill discovery — search 33,000+ curated agent skills from all major registries using natural language. Runs entirely locally via FAISS. No API calls, no latency.",
   "files": [
     "scripts/search.py",
