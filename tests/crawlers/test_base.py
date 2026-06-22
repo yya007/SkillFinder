@@ -806,3 +806,26 @@ class TestGithubGetRateLimit:
         )
         wait = _rate_limit_wait_seconds(resp)
         assert 10 <= wait <= 20
+
+
+class TestApiCounters:
+    def test_categorizes_requests_by_kind(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, record_request,
+        )
+        reset_api_counters()
+        record_request("https://api.github.com/repos/a/b", 200)
+        record_request("https://api.github.com/search/code?q=x", 200)
+        record_request("https://raw.githubusercontent.com/a/b/main/SKILL.md", 200)
+        record_request("https://api.github.com/repos/a/b", 304)
+        counters = get_api_counters()
+        assert counters["rest"] == 1
+        assert counters["search"] == 1
+        assert counters["raw_free"] == 1
+        assert counters["conditional_304"] == 1
+
+    def test_reset_zeroes_counters(self):
+        from crawlers.base import reset_api_counters, get_api_counters, record_request
+        record_request("https://api.github.com/repos/a/b", 200)
+        reset_api_counters()
+        assert get_api_counters()["rest"] == 0

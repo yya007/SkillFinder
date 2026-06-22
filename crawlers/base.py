@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -37,6 +38,41 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
+
+_api_counter_lock = threading.Lock()
+_API_COUNTERS = {"rest": 0, "search": 0, "raw_free": 0, "conditional_304": 0, "graphql": 0}
+
+
+def reset_api_counters() -> None:
+    """Zero all API-call counters (call at the start of a measured run)."""
+    with _api_counter_lock:
+        for key in _API_COUNTERS:
+            _API_COUNTERS[key] = 0
+
+
+def get_api_counters() -> dict:
+    """Return a snapshot of the API-call counters by category."""
+    with _api_counter_lock:
+        return dict(_API_COUNTERS)
+
+
+def record_request(url: str, status_code: int) -> None:
+    """Categorize one HTTP request for cost accounting.
+
+    304 (conditional) and raw.githubusercontent.com requests are FREE — they do
+    not consume the 5,000/hr REST quota. /search/* is metered at 10-30/min.
+    """
+    with _api_counter_lock:
+        if status_code == 304:
+            _API_COUNTERS["conditional_304"] += 1
+        elif "raw.githubusercontent.com" in url:
+            _API_COUNTERS["raw_free"] += 1
+        elif "/graphql" in url:
+            _API_COUNTERS["graphql"] += 1
+        elif "/search/" in url:
+            _API_COUNTERS["search"] += 1
+        else:
+            _API_COUNTERS["rest"] += 1
 
 
 def _utc_now_iso() -> str:
