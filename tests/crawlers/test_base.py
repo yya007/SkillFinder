@@ -887,6 +887,36 @@ class TestApiCounters:
         reset_api_counters()
         assert get_api_counters()["rest"] == 0
 
+    def test_fetch_repo_metadata_with_etag_counts_304(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, fetch_repo_metadata_with_etag,
+        )
+        fake_resp = MagicMock()
+        fake_resp.status_code = 304
+        fake_resp.headers = {"ETag": 'W/"x"'}
+        session = MagicMock()
+        session.get.return_value = fake_resp
+        reset_api_counters()
+        fetch_repo_metadata_with_etag(session, "a/b", 'W/"x"')
+        assert get_api_counters()["conditional_304"] == 1
+
+    def test_fetch_repo_metadata_with_etag_counts_200(self):
+        from crawlers.base import (
+            reset_api_counters, get_api_counters, fetch_repo_metadata_with_etag,
+        )
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.headers = {"ETag": 'W/"y"'}
+        fake_resp.json.return_value = {
+            "stargazers_count": 5, "pushed_at": "2026-01-01T00:00:00Z",
+            "topics": [], "description": "", "default_branch": "main",
+        }
+        session = MagicMock()
+        session.get.return_value = fake_resp
+        reset_api_counters()
+        fetch_repo_metadata_with_etag(session, "a/b", None)
+        assert get_api_counters()["rest"] == 1
+
 
 # ---------------------------------------------------------------------------
 # TestMetaCacheIO

@@ -755,6 +755,7 @@ def fetch_repo_metadata_with_etag(
         logger.warning("Could not fetch metadata for %s: %s", repo_full_name, exc)
         return {}, None
 
+    record_request(url, resp.status_code)
     new_etag = resp.headers.get("ETag")
 
     if resp.status_code == 304:
