@@ -110,7 +110,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -133,7 +135,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -158,7 +162,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/skill-a"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -182,7 +188,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = [f"user/skill-{i}" for i in range(10)]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -205,7 +213,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/no-skill-md", "user/has-skill-md"]
             mock_meta.return_value = _mock_meta()
             mock_paths.side_effect = [{}, {"SKILL.md": "sha1"}]
@@ -236,7 +246,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/already-covered", "user/new-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -271,7 +283,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/skill-a", "user/skill-b"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -293,7 +307,9 @@ class TestTopicCrawlerRun:
              patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_content_cache"), \
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
-             patch("crawlers.topic_crawler.save_tree_cache"):
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
             mock_disc.return_value = ["user/my-cool-skill"]
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {"SKILL.md": "sha1"}
@@ -342,6 +358,8 @@ class TestTopicCrawlerRun:
         )
         monkeypatch.setattr(tc, "fetch_skill_md_cached", lambda *a, **k: "---\nname: t\n---")
         monkeypatch.setattr(tc, "_discover_topic_repos", lambda s, limit=1000, since=None: ["user/skill-a"])
+        monkeypatch.setattr(tc, "load_crawl_state", lambda p: {})
+        monkeypatch.setattr(tc, "save_crawl_state", lambda state, p: None)
 
         out = str(tmp_path / "out.jsonl")
         count = tc.run(out)
