@@ -1,9 +1,37 @@
 # PRD-005: CI/CD & Release Automation
 
-**Status:** Implemented
+**Status:** Implemented (amended 2026-06-22 — see "Architecture amendment" below)
 **Phase:** 5 of 5
 **Depends on:** PRD-001, PRD-002 (pipeline scripts work), PRD-004 (release artifact defined)
 **Blocks:** Nothing (final phase)
+
+---
+
+## Architecture amendment (2026-06-22)
+
+The original design (below) assumed CI could perform a **from-scratch full crawl +
+rebuild** weekly. In practice it never could: all crawlers share the single Actions
+`GITHUB_TOKEN` (5,000 REST req/hr, ~10/min code-search), so fetching the ~37k-skill
+corpus needs many hours of API quota — far beyond any runner budget. Every scheduled
+run since launch was cancelled or failed; a manual run on 2026-06-22 produced only
+1,641 skills in 45 minutes (gate needs ≥ 8,000).
+
+**Revised model — hybrid:**
+
+- **Full index builds are done locally and published manually.** A maintainer runs the
+  crawlers in `--mode incremental` on cached `data/raw/`, then normalize → embed
+  (Ollama) → `build_index.py`, and publishes the `index-YYYYMMDD` GitHub Release (see
+  the `update-index` skill). This is how the index has always actually been seeded.
+- **CI (`update-index.yml`) is incremental-only.** It downloads the latest `index-*`
+  release and *appends* newly-discovered skills, with a 60-minute timeout. It is a
+  deliberate **green no-op** when an append is impossible — no index release yet, or the
+  index is an `IndexIVFScalarQuantizer` (≥ `IVF_THRESHOLD` vectors) whose centroids
+  cannot accept incremental adds. Because the production corpus is > 30k, CI is
+  effectively dormant until a local rebuild lowers the count or the index type changes;
+  it exists to avoid weekly false-failures and to self-activate for smaller corpora.
+
+The functional requirements below describe the original full-rebuild-in-CI design and
+are retained for history; F5 (incremental strategy) is what CI now implements.
 
 ---
 
