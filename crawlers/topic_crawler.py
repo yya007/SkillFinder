@@ -155,6 +155,12 @@ def _discover_topic_repos(
                 break
             page += 1
 
+    # Hitting the cap means we stopped before enumerating all matches, so coverage
+    # is partial — signal incomplete so the caller won't advance its watermark and
+    # skip repos beyond the cap.
+    if len(results) >= limit:
+        discovery_complete = False
+
     log.info("Topic discovery: %d unique repos found across %d queries", len(results), len(TOPIC_QUERIES))
     return results[:limit], discovery_complete
 
@@ -415,12 +421,14 @@ def run(
     save_content_cache(content_cache, "data/crawl_state/content_cache.json")
     save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
 
-    # Advance the discovery window only after a complete, clean sweep. A --limit
-    # truncation, a per-repo failure, or an incomplete topic search (discovery_complete=False,
-    # meaning at least one query hit a RuntimeError) leaves discovered repos unprocessed;
-    # advancing past them would skip them next run (they're excluded by pushed:>run_started).
-    # Periodic full-mode crawls are the backstop for anything missed.
-    if discovered and discovery_complete and not truncated and not had_failure:
+    # Advance the discovery window only after a complete, clean sweep.
+    # discovery_complete is False if a topic search query errored OR hit the result
+    # cap; truncated means --limit stopped processing; had_failure means a per-repo
+    # fetch failed. Any of those leaves repos unprocessed, and advancing past them
+    # would skip them next run (excluded by pushed:>run_started). A *complete* run
+    # that simply found nothing new still advances (quiet periods shouldn't re-scan
+    # the same window forever). Periodic full-mode crawls are the backstop.
+    if discovery_complete and not truncated and not had_failure:
         crawl_state["last_discovery_at"] = run_started
         save_crawl_state(crawl_state, "topic")
 

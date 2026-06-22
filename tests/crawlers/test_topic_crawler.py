@@ -62,9 +62,23 @@ class TestDiscoverTopicRepos:
         session = MagicMock()
         with patch("crawlers.topic_crawler.github_get") as mock_get:
             mock_get.side_effect = [big_page, empty] * 20
-            result, _ = _discover_topic_repos(session, limit=5)
+            result, complete = _discover_topic_repos(session, limit=5)
 
         assert len(result) <= 5
+        # Hitting the cap means coverage is partial → incomplete.
+        assert complete is False
+
+    def test_complete_when_under_cap_and_no_errors(self):
+        from crawlers.topic_crawler import _discover_topic_repos
+
+        page = {"items": [{"full_name": "user/skill-a"}]}
+        empty = {"items": []}
+        session = MagicMock()
+        with patch("crawlers.topic_crawler.github_get") as mock_get:
+            mock_get.side_effect = [page, empty] * 30
+            result, complete = _discover_topic_repos(session, limit=1000)
+
+        assert complete is True
 
     def test_handles_api_error_gracefully(self):
         from crawlers.topic_crawler import _discover_topic_repos
@@ -470,15 +484,42 @@ class TestDiscoverPushedFilter:
         assert "last_discovery_at" in saved_state
         assert saved_state["last_discovery_at"]  # non-empty timestamp
 
-    def test_empty_discovery_does_not_advance_window(self, tmp_path):
-        """A discovery that returns no repos (e.g. transient rate-limit) must NOT
-        advance last_discovery_at, or the next run would skip the missed window."""
+    def test_complete_empty_discovery_advances_window(self, tmp_path):
+        """A discovery that COMPLETES cleanly but finds nothing new still advances
+        last_discovery_at — a quiet period must not re-scan the same window forever.
+        (The transient-failure / incomplete case is covered by discovery_complete=False
+        in test_incomplete_discovery_does_not_advance_window.)"""
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos", return_value=([], True)), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached"), \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached"), \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            run(str(tmp_path / "out.jsonl"), mode="discover")
+
+        mock_save_state.assert_called_once()
+
+    def test_capped_discovery_does_not_advance_window(self, tmp_path):
+        """A discovery that hit the result cap is incomplete (more matches exist),
+        so the watermark must NOT advance even though repos were found."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos",
+                   return_value=(["user/skill-a"], False)), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached", return_value=_mock_meta()), \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached", return_value={}), \
              patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
              patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_meta_cache"), \
