@@ -191,6 +191,20 @@ jobs:
           files: ${{ env.ARTIFACT }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Record this release's stats (date, count, per-source breakdown) in the
+      # committed release-history log, and push it back to the default branch.
+      - name: Update release log
+        if: env.SKIP != 'true'
+        run: |
+          python pipeline/update_release_log.py
+          if ! git diff --quiet -- data/release_log.jsonl docs/release-log.md; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add data/release_log.jsonl docs/release-log.md
+            git commit -m "chore(data): log index release ${{ env.DATE }} (${{ env.FINAL_COUNT }} skills) [skip ci]"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          fi
+
       - name: Delete old releases (keep latest 3)
         if: env.SKIP != 'true'
         env:

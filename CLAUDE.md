@@ -12,7 +12,7 @@ Ships as a skill for Claude Code, OpenClaw, and Codex.
 | Test (unit, no network) | `pytest` |
 | Run a search | `python scripts/search.py "deploy k8s" --no-json` |
 | Crawl (requires GITHUB_TOKEN) | `python -m crawlers.skillsmp_crawler -o data/raw/skillsmp.jsonl > data/logs/skillsmp.log 2>&1` |
-| Full pipeline | `pipeline/normalize.py → embed.py → build_index.py` |
+| Full pipeline | `pipeline/normalize.py → embed.py → build_index.py → update_docs.py → update_release_log.py` |
 
 ## Git Workflow
 
@@ -42,7 +42,7 @@ Ships as a skill for Claude Code, OpenClaw, and Codex.
 
 ## Gotchas
 
-- `data/index.faiss` and `data/metadata.jsonl` are committed to the repo. Pipeline intermediates (`data/raw/`, `data/embeddings.npy`, etc.) are gitignored. Run `python scripts/update_index.py` to pull the latest weekly release.
+- `data/index.faiss`, `data/metadata.jsonl`, and `data/release_log.jsonl` (per-release skill-count history; rendered to `docs/release-log.md` by `pipeline/update_release_log.py`) are committed to the repo. Pipeline intermediates (`data/raw/`, `data/embeddings.npy`, etc.) are gitignored. Run `python scripts/update_index.py` to pull the latest weekly release.
 - FAISS index row N **must** correspond to `metadata.jsonl` line N — never reorder either file independently.
 - `ollama pull qwen3-embedding:0.6b` must be run before any search or embed.
 - ClawHub = OpenClaw registry. `/plugin install` targets SkillsMP — it silently fails for ClawHub skills.
