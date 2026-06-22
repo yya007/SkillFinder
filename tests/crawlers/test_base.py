@@ -902,3 +902,34 @@ class TestMetaCacheIO:
     def test_missing_file_returns_empty_dict(self, tmp_path):
         from crawlers.base import load_meta_cache
         assert load_meta_cache(str(tmp_path / "nope.json")) == {}
+
+
+# ---------------------------------------------------------------------------
+# TestFetchRepoMetadataCached
+# ---------------------------------------------------------------------------
+
+class TestFetchRepoMetadataCached:
+    def test_returns_cached_on_304(self):
+        from crawlers.base import fetch_repo_metadata_cached
+        cache = {"a/b": {"etag": "W/\"v1\"", "stargazers_count": 42,
+                         "pushed_at": "2026-01-01T00:00:00Z", "topics": [],
+                         "description": "", "default_branch": "main"}}
+        with patch("crawlers.base.fetch_repo_metadata_with_etag",
+                   return_value=(None, "W/\"v1\"")) as mock_fetch:
+            meta = fetch_repo_metadata_cached(MagicMock(), "a/b", cache)
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args.args[1] == "a/b"      # called with the repo
+        assert mock_fetch.call_args.args[2] == "W/\"v1\""  # ...and its cached etag
+        assert meta["stargazers_count"] == 42             # served from cache, no re-download
+
+    def test_updates_cache_on_200(self):
+        from crawlers.base import fetch_repo_metadata_cached
+        cache = {}
+        fresh = {"stargazers_count": 7, "pushed_at": "2026-02-02T00:00:00Z",
+                 "topics": ["ai"], "description": "d", "default_branch": "main"}
+        with patch("crawlers.base.fetch_repo_metadata_with_etag",
+                   return_value=(fresh, "W/\"v2\"")):
+            meta = fetch_repo_metadata_cached(MagicMock(), "c/d", cache)
+        assert meta["stargazers_count"] == 7
+        assert cache["c/d"]["etag"] == "W/\"v2\""
+        assert cache["c/d"]["stargazers_count"] == 7

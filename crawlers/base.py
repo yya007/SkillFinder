@@ -8,6 +8,7 @@ Public API:
   extract_github_url()          - Normalize any URL to a canonical GitHub repo URL
   fetch_repo_metadata()         - Fetch stars/pushed_at/topics/branch for a repo
   fetch_repo_metadata_with_etag() - ETag-aware version; returns (dict|None, etag|None)
+  fetch_repo_metadata_cached()   - Like fetch_repo_metadata_with_etag but with a persistent cache (304 = zero quota)
   fetch_commit_sha()            - Fetch HEAD commit SHA for a repo (one API call)
   find_skill_md_paths()         - Find all SKILL.md paths → {path: blob_sha} dict
   load_filter_cache()           - Load set of filtered-out canonical URLs
@@ -773,6 +774,32 @@ def fetch_repo_metadata_with_etag(
         "description": data.get("description", ""),
         "default_branch": data.get("default_branch", "main"),
     }, new_etag
+
+
+def fetch_repo_metadata_cached(session, repo_full_name: str, cache: dict) -> dict:
+    """Like fetch_repo_metadata, but uses a persistent ETag cache.
+
+    On a 304 (resource unchanged) the cached metadata is returned and NO quota is
+    spent on the body. ``cache`` is mutated in place; persist it with
+    save_meta_cache() after the crawl.
+    """
+    entry = cache.get(repo_full_name, {})
+    etag = entry.get("etag")
+    meta, new_etag = fetch_repo_metadata_with_etag(session, repo_full_name, etag)
+
+    if meta is None:  # 304 Not Modified — reuse cached metadata
+        return {k: v for k, v in entry.items() if k != "etag"}
+
+    if meta:  # 200 — refresh cache
+        cache[repo_full_name] = {
+            "etag": new_etag or "",
+            "pushed_at": meta.get("pushed_at", ""),
+            "stargazers_count": meta.get("stargazers_count", 0),
+            "topics": meta.get("topics", []),
+            "description": meta.get("description", ""),
+            "default_branch": meta.get("default_branch", "main"),
+        }
+    return meta
 
 
 def fetch_commit_sha(session, repo_full_name: str) -> str | None:
