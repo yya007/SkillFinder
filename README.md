@@ -11,7 +11,7 @@
 
 </div>
 
-SkillFinder searches <!-- stats:skill-count:start -->37,500+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
+SkillFinder searches <!-- stats:skill-count:start -->42,000+<!-- stats:skill-count:end --> curated agent skills from all major registries using natural language. Everything runs locally: no API calls, no latency, no cost per query. Works with any agent that supports **SKILL.md** — Claude Code, OpenClaw, Codex, and more.
 
 ```
 You: /skill-finder deploy kubernetes clusters with rollback
@@ -300,12 +300,12 @@ pytest tests/quality/ -v -m quality
 <!-- stats:coverage-table:start -->
 | Registry | Crawler | Skills in index |
 |----------|---------|----------------:|
-| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 387 |
-| ClawHub / OpenClaw | `clawhub_crawler.py` | 4,610 |
-| SkillHub | `skillhub_crawler.py` | 7,615 |
-| Anthropic official marketplace | `marketplace_crawler.py` | 28,240 |
-| GitHub topics | `topic_crawler.py` | 15,351 |
-| **Total (after dedup)** | | **37,962** |
+| SkillsMP (GitHub code search) | `skillsmp_crawler.py` | 435 |
+| ClawHub / OpenClaw | `clawhub_crawler.py` | 4,614 |
+| SkillHub | `skillhub_crawler.py` | 12,448 |
+| Anthropic official marketplace | `marketplace_crawler.py` | 28,253 |
+| GitHub topics | `topic_crawler.py` | 15,397 |
+| **Total (after dedup)** | | **42,068** |
 <!-- stats:coverage-table:end -->
 
 ## Star Distribution
@@ -313,13 +313,13 @@ pytest tests/quality/ -v -m quality
 <!-- stats:index-distribution:start -->
 | Stars | Skills | Distribution |
 |-------|-------:|:-------------|
-| 10–49 | 4,135 | ██░░░░░░░░░░░░░░░░░░ 11% |
-| 50–99 | 1,847 | █░░░░░░░░░░░░░░░░░░░ 5% |
-| 100–499 | 16,231 | █████████░░░░░░░░░░░ 43% |
-| 500–999 | 1,144 | █░░░░░░░░░░░░░░░░░░░ 3% |
-| 1k–5k | 9,169 | █████░░░░░░░░░░░░░░░ 24% |
-| 5k+ | 5,436 | ███░░░░░░░░░░░░░░░░░ 14% |
-| **Total** | **37,962** | |
+| 10–49 | 5,811 | ███░░░░░░░░░░░░░░░░░ 14% |
+| 50–99 | 2,413 | █░░░░░░░░░░░░░░░░░░░ 6% |
+| 100–499 | 17,137 | ████████░░░░░░░░░░░░ 41% |
+| 500–999 | 1,537 | █░░░░░░░░░░░░░░░░░░░ 4% |
+| 1k–5k | 9,475 | █████░░░░░░░░░░░░░░░ 23% |
+| 5k+ | 5,695 | ███░░░░░░░░░░░░░░░░░ 14% |
+| **Total** | **42,068** | |
 <!-- stats:index-distribution:end -->
 
 > **Not shown:** skills with 0–9 stars are dropped from the index regardless of which registry they come from. A non-empty description is also required.
