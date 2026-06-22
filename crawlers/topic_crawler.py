@@ -100,11 +100,14 @@ TOPIC_QUERIES: list[str] = [
 # Discovery
 # ---------------------------------------------------------------------------
 
-def _discover_topic_repos(session, limit: int = 1000, since: str | None = None) -> list[str]:
+def _discover_topic_repos(
+    session, limit: int = 1000, since: str | None = None
+) -> tuple[list[str], bool]:
     """Search GitHub for repos matching TOPIC_QUERIES.
 
     Paginates each query (up to 1000 results per query as GitHub allows).
-    Returns a deduplicated list of "{owner}/{repo}" full names, at most `limit`.
+    Returns a deduplicated list of "{owner}/{repo}" full names, at most `limit`,
+    and a boolean indicating whether all queries completed without error.
 
     Args:
         session: A requests.Session from make_session().
@@ -115,10 +118,13 @@ def _discover_topic_repos(session, limit: int = 1000, since: str | None = None) 
                  incremental/discover re-runs.
 
     Returns:
-        Deduplicated list of full repo names.
+        Tuple of (deduplicated list of full repo names, discovery_complete).
+        discovery_complete is False if any query raised a RuntimeError, meaning
+        the result set is partial and the caller must not advance its watermark.
     """
     seen: set[str] = set()
     results: list[str] = []
+    discovery_complete = True
 
     for query in TOPIC_QUERIES:
         effective_query = f"{query} pushed:>{since}" if since else query
@@ -132,6 +138,7 @@ def _discover_topic_repos(session, limit: int = 1000, since: str | None = None) 
                 )
             except RuntimeError as exc:
                 log.warning("Topic repo search failed for %r (page %d): %s", effective_query, page, exc)
+                discovery_complete = False
                 break
 
             items = data.get("items", [])
@@ -149,7 +156,7 @@ def _discover_topic_repos(session, limit: int = 1000, since: str | None = None) 
             page += 1
 
     log.info("Topic discovery: %d unique repos found across %d queries", len(results), len(TOPIC_QUERIES))
-    return results[:limit]
+    return results[:limit], discovery_complete
 
 
 def _load_existing_repo_urls(raw_dirs: list[str]) -> set[str]:
@@ -271,7 +278,7 @@ def run(
 
     # Discover repos via topic search, using date-filter on incremental/discover runs
     since = crawl_state.get("last_discovery_at") if mode in ("incremental", "discover") else None
-    discovered = _discover_topic_repos(session, limit=1000, since=since)
+    discovered, discovery_complete = _discover_topic_repos(session, limit=1000, since=since)
 
     # Pre-filter discovered repos before the GraphQL batch to avoid wasting quota on
     # repos that will be skipped anyway (already_covered or in filter_cache).
@@ -398,10 +405,11 @@ def run(
     save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
 
     # Advance the discovery window only after a complete, clean sweep. A --limit
-    # truncation or a per-repo failure leaves discovered repos unprocessed; advancing
-    # past them would skip them next run (they're excluded by pushed:>run_started).
+    # truncation, a per-repo failure, or an incomplete topic search (discovery_complete=False,
+    # meaning at least one query hit a RuntimeError) leaves discovered repos unprocessed;
+    # advancing past them would skip them next run (they're excluded by pushed:>run_started).
     # Periodic full-mode crawls are the backstop for anything missed.
-    if discovered and not truncated and not had_failure:
+    if discovered and discovery_complete and not truncated and not had_failure:
         crawl_state["last_discovery_at"] = run_started
         save_crawl_state(crawl_state, "topic")
 
