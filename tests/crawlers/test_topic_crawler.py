@@ -103,7 +103,7 @@ class TestTopicCrawlerRun:
         from crawlers.topic_crawler import run
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
-             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}) as mock_batch, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
@@ -445,10 +445,10 @@ class TestDiscoverPushedFilter:
              patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
              patch("crawlers.topic_crawler.save_tree_cache"), \
              patch("crawlers.topic_crawler.load_crawl_state",
-                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}) as mock_load_state, \
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
              patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
 
-            mock_disc.return_value = []
+            mock_disc.return_value = ["user/skill-a"]  # non-empty: a successful discovery
             mock_meta.return_value = _mock_meta()
             mock_paths.return_value = {}
             mock_skill_md.return_value = None
@@ -459,15 +459,39 @@ class TestDiscoverPushedFilter:
         # _discover_topic_repos was called with since= from state
         mock_disc.assert_called_once()
         call_kwargs = mock_disc.call_args
-        assert call_kwargs.kwargs.get("since") == "2026-01-01T00:00:00Z" or (
-            len(call_kwargs.args) >= 2 and call_kwargs.args[1] == "2026-01-01T00:00:00Z"
-        ), f"Expected since='2026-01-01T00:00:00Z', got call: {call_kwargs}"
+        assert call_kwargs.kwargs.get("since") == "2026-01-01T00:00:00Z", (
+            f"Expected since='2026-01-01T00:00:00Z', got call: {call_kwargs}"
+        )
 
         # save_crawl_state was called once and the state has last_discovery_at set
         mock_save_state.assert_called_once()
         saved_state = mock_save_state.call_args.args[0]
         assert "last_discovery_at" in saved_state
         assert saved_state["last_discovery_at"]  # non-empty timestamp
+
+    def test_empty_discovery_does_not_advance_window(self, tmp_path):
+        """A discovery that returns no repos (e.g. transient rate-limit) must NOT
+        advance last_discovery_at, or the next run would skip the missed window."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos", return_value=[]), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached"), \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached"), \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            run(str(tmp_path / "out.jsonl"), mode="discover")
+
+        mock_save_state.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +518,7 @@ class TestTopicCrawlerBatchMetaIntegration:
 
         with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
              patch("crawlers.topic_crawler.fetch_repo_metadata_batch",
-                   return_value=batch_meta) as mock_batch, \
+                   return_value=batch_meta), \
              patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_rest_meta, \
              patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
              patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \

@@ -391,8 +391,12 @@ def run(
 
     # Persist discovery timestamp so next incremental/discover run can filter by it.
     # Use run_started (not now) so repos pushed *during* this crawl aren't missed.
-    crawl_state["last_discovery_at"] = run_started
-    save_crawl_state(crawl_state, "topic")
+    # Only advance the window when discovery actually returned repos: a transient
+    # failure (rate-limit/empty search) must NOT push last_discovery_at forward, or
+    # the next incremental run would silently skip repos changed in the gap.
+    if discovered:
+        crawl_state["last_discovery_at"] = run_started
+        save_crawl_state(crawl_state, "topic")
 
     written = write_jsonl(records, output_path, append=resume)
     log.info("Topic crawler done: %d records written to %s", written, output_path)
