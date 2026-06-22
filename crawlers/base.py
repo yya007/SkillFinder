@@ -197,6 +197,8 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             logger.warning("Network error on %s: %s", url, exc)
             continue
 
+        record_request(url, resp.status_code)
+
         # ETag 304: resource unchanged
         if resp.status_code == 304:
             logger.debug("ETag 304 for %s: not modified", url)
@@ -231,6 +233,7 @@ def github_get(session: requests.Session, url: str, params: dict = None, timeout
             except requests.RequestException as exc:
                 last_exc = exc
                 break
+            record_request(url, resp.status_code)
 
         if resp.status_code == 200:
             # Proactive check: if remaining quota is critically low, sleep
