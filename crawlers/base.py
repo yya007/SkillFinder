@@ -597,7 +597,12 @@ def find_skill_md_paths_cached(
         return tree_cache[repo_full_name]["paths"]
 
     paths = find_skill_md_paths(session, repo_full_name)
-    if pushed_at:
+    # Only cache a NON-empty result. find_skill_md_paths returns {} both for a
+    # repo with no SKILL.md and for a transient Trees/Search API failure; caching
+    # {} under the unchanged pushed_at would pin a repo that actually has skills to
+    # "empty" forever (it never re-fetches until pushed again). Genuinely empty
+    # repos are cheaply re-checked and short-circuited by the crawler's filter cache.
+    if pushed_at and paths:
         tree_cache[repo_full_name] = {"pushed_at": pushed_at, "paths": paths}
     return paths
 

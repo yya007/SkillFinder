@@ -1089,6 +1089,18 @@ class TestFindSkillMdPathsCached:
             "paths": {"SKILL.md": "sha9"},
         }
 
+    def test_empty_result_not_cached(self):
+        """An empty result (no SKILL.md OR a transient Trees failure, both {}) must
+        NOT be cached — caching it would pin a repo with skills to empty forever."""
+        tree_cache = {}
+        with patch("crawlers.base.find_skill_md_paths", return_value={}) as mock_tree:
+            result = find_skill_md_paths_cached(
+                MagicMock(), "u/r", "2026-02-02T00:00:00Z", tree_cache
+            )
+        assert result == {}
+        mock_tree.assert_called_once()
+        assert tree_cache == {}  # not cached
+
     def test_changed_pushed_at_refetches(self):
         """Stale pushed_at → refetches and updates cache entry."""
         tree_cache = {

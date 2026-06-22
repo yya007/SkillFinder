@@ -510,6 +510,34 @@ class TestDiscoverPushedFilter:
 
         mock_save_state.assert_called_once()
 
+    def test_watermark_not_saved_when_write_fails(self, tmp_path):
+        """The discovery watermark must be persisted only AFTER write_jsonl succeeds;
+        a failed write must not advance last_discovery_at past unwritten repos."""
+        import pytest
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos",
+                   return_value=(["user/skill-a"], True)), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached", return_value=_mock_meta()), \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached"), \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}), \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state, \
+             patch("crawlers.topic_crawler.write_jsonl", side_effect=OSError("disk full")):
+
+            with pytest.raises(OSError):
+                run(str(tmp_path / "out.jsonl"), mode="discover")
+
+        mock_save_state.assert_not_called()
+
     def test_capped_discovery_does_not_advance_window(self, tmp_path):
         """A discovery that hit the result cap is incomplete (more matches exist),
         so the watermark must NOT advance even though repos were found."""

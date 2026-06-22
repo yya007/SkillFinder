@@ -421,19 +421,22 @@ def run(
     save_content_cache(content_cache, "data/crawl_state/content_cache.json")
     save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
 
-    # Advance the discovery window only after a complete, clean sweep.
-    # discovery_complete is False if a topic search query errored OR hit the result
-    # cap; truncated means --limit stopped processing; had_failure means a per-repo
-    # fetch failed. Any of those leaves repos unprocessed, and advancing past them
-    # would skip them next run (excluded by pushed:>run_started). A *complete* run
-    # that simply found nothing new still advances (quiet periods shouldn't re-scan
-    # the same window forever). Periodic full-mode crawls are the backstop.
+    written = write_jsonl(records, output_path, append=resume)
+    log.info("Topic crawler done: %d records written to %s", written, output_path)
+
+    # Advance the discovery window only AFTER the records are durably written, and
+    # only after a complete, clean sweep. discovery_complete is False if a topic
+    # search query errored OR hit the result cap; truncated means --limit stopped
+    # processing; had_failure means a per-repo fetch failed. Any of those leaves
+    # repos unprocessed, and advancing past them would skip them next run (excluded
+    # by pushed:>run_started). Saving the watermark before write_jsonl would, on a
+    # failed/killed write, advance past records that were never persisted. A
+    # *complete* run that found nothing new still advances (quiet periods shouldn't
+    # re-scan the same window forever). Periodic full-mode crawls are the backstop.
     if discovery_complete and not truncated and not had_failure:
         crawl_state["last_discovery_at"] = run_started
         save_crawl_state(crawl_state, "topic")
 
-    written = write_jsonl(records, output_path, append=resume)
-    log.info("Topic crawler done: %d records written to %s", written, output_path)
     return written
 
 
