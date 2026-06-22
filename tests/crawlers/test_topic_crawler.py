@@ -341,7 +341,7 @@ class TestTopicCrawlerRun:
             lambda s, r, p, c: {"SKILL.md": "sha1"},
         )
         monkeypatch.setattr(tc, "fetch_skill_md_cached", lambda *a, **k: "---\nname: t\n---")
-        monkeypatch.setattr(tc, "_discover_topic_repos", lambda s, limit=1000: ["user/skill-a"])
+        monkeypatch.setattr(tc, "_discover_topic_repos", lambda s, limit=1000, since=None: ["user/skill-a"])
 
         out = str(tmp_path / "out.jsonl")
         count = tc.run(out)
@@ -350,3 +350,92 @@ class TestTopicCrawlerRun:
         assert calls["saved_meta"] == 1
         assert calls["saved_content"] == 1
         assert calls["saved_tree"] == 1
+
+
+# ---------------------------------------------------------------------------
+# TestDiscoverPushedFilter — date-filter tests (RED phase)
+# ---------------------------------------------------------------------------
+
+class TestDiscoverPushedFilter:
+    """Tests for the since= date-filter on _discover_topic_repos."""
+
+    def test_discover_appends_pushed_filter_when_since_set(self):
+        """When since is set, every query q should end with pushed:><since>."""
+        from crawlers.topic_crawler import _discover_topic_repos
+
+        captured_qs: list[str] = []
+
+        def fake_github_get(session, url, params=None, **kwargs):
+            if params:
+                captured_qs.append(params.get("q", ""))
+            return {"items": []}
+
+        session = MagicMock()
+        with patch("crawlers.topic_crawler.github_get", side_effect=fake_github_get):
+            _discover_topic_repos(session, since="2026-01-01T00:00:00Z")
+
+        assert len(captured_qs) > 0
+        for q in captured_qs:
+            assert q.endswith(" pushed:>2026-01-01T00:00:00Z"), (
+                f"Expected q to end with pushed filter, got: {q!r}"
+            )
+
+    def test_discover_no_filter_when_since_none(self):
+        """When since is None, no query q should contain 'pushed:>'."""
+        from crawlers.topic_crawler import _discover_topic_repos
+
+        captured_qs: list[str] = []
+
+        def fake_github_get(session, url, params=None, **kwargs):
+            if params:
+                captured_qs.append(params.get("q", ""))
+            return {"items": []}
+
+        session = MagicMock()
+        with patch("crawlers.topic_crawler.github_get", side_effect=fake_github_get):
+            _discover_topic_repos(session, since=None)
+
+        assert len(captured_qs) > 0
+        for q in captured_qs:
+            assert "pushed:>" not in q, (
+                f"Expected no pushed filter when since=None, got: {q!r}"
+            )
+
+    def test_run_uses_and_saves_discovery_state(self, tmp_path):
+        """run() in discover mode reads last_discovery_at and saves updated state."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state",
+                   return_value={"last_discovery_at": "2026-01-01T00:00:00Z"}) as mock_load_state, \
+             patch("crawlers.topic_crawler.save_crawl_state") as mock_save_state:
+
+            mock_disc.return_value = []
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {}
+            mock_skill_md.return_value = None
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, mode="discover")
+
+        # _discover_topic_repos was called with since= from state
+        mock_disc.assert_called_once()
+        call_kwargs = mock_disc.call_args
+        assert call_kwargs.kwargs.get("since") == "2026-01-01T00:00:00Z" or (
+            len(call_kwargs.args) >= 2 and call_kwargs.args[1] == "2026-01-01T00:00:00Z"
+        ), f"Expected since='2026-01-01T00:00:00Z', got call: {call_kwargs}"
+
+        # save_crawl_state was called once and the state has last_discovery_at set
+        mock_save_state.assert_called_once()
+        saved_state = mock_save_state.call_args.args[0]
+        assert "last_discovery_at" in saved_state
+        assert saved_state["last_discovery_at"]  # non-empty timestamp

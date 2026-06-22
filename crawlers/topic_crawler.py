@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from crawlers.base import (
     GITHUB_API,
+    _utc_now_iso,
     add_to_filter_cache,
     fetch_repo_metadata_cached,
     fetch_skill_md_cached,
@@ -41,12 +42,14 @@ from crawlers.base import (
     github_get,
     infer_platforms,
     load_content_cache,
+    load_crawl_state,
     load_filter_cache,
     load_meta_cache,
     load_tree_cache,
     make_session,
     parse_frontmatter,
     save_content_cache,
+    save_crawl_state,
     save_meta_cache,
     save_tree_cache,
     write_jsonl,
@@ -96,7 +99,7 @@ TOPIC_QUERIES: list[str] = [
 # Discovery
 # ---------------------------------------------------------------------------
 
-def _discover_topic_repos(session, limit: int = 1000) -> list[str]:
+def _discover_topic_repos(session, limit: int = 1000, since: str | None = None) -> list[str]:
     """Search GitHub for repos matching TOPIC_QUERIES.
 
     Paginates each query (up to 1000 results per query as GitHub allows).
@@ -105,6 +108,10 @@ def _discover_topic_repos(session, limit: int = 1000) -> list[str]:
     Args:
         session: A requests.Session from make_session().
         limit:   Total maximum unique repos to return across all queries.
+        since:   Optional ISO-8601 timestamp.  When provided, appends
+                 ``pushed:><since>`` to every query so only repos pushed after
+                 that time are returned — dramatically reducing API quota on
+                 incremental/discover re-runs.
 
     Returns:
         Deduplicated list of full repo names.
@@ -113,16 +120,17 @@ def _discover_topic_repos(session, limit: int = 1000) -> list[str]:
     results: list[str] = []
 
     for query in TOPIC_QUERIES:
+        effective_query = f"{query} pushed:>{since}" if since else query
         page = 1
         while len(results) < limit:
             try:
                 data = github_get(
                     session,
                     f"{GITHUB_API}/search/repositories",
-                    params={"q": query, "per_page": 100, "page": page},
+                    params={"q": effective_query, "per_page": 100, "page": page},
                 )
             except RuntimeError as exc:
-                log.warning("Topic repo search failed for %r (page %d): %s", query, page, exc)
+                log.warning("Topic repo search failed for %r (page %d): %s", effective_query, page, exc)
                 break
 
             items = data.get("items", [])
@@ -218,6 +226,10 @@ def run(
         resume = True
     import json as _json
 
+    # Load per-source crawl state for date-filter support
+    crawl_state = load_crawl_state("topic")
+    run_started = _utc_now_iso()
+
     session = make_session(token=token)
 
     # Load ETag metadata cache, blob-SHA content cache, and Trees-path cache
@@ -256,8 +268,9 @@ def run(
                     pass
         log.info("Resume mode: %d skill keys already in output", len(existing_skill_keys))
 
-    # Discover repos via topic search
-    discovered = _discover_topic_repos(session, limit=1000)
+    # Discover repos via topic search, using date-filter on incremental/discover runs
+    since = crawl_state.get("last_discovery_at") if mode in ("incremental", "discover") else None
+    discovered = _discover_topic_repos(session, limit=1000, since=since)
 
     # Cache (meta, skill_md_paths) per repo to avoid repeated API calls
     _repo_cache: dict[str, tuple[dict, list[str]]] = {}
@@ -366,6 +379,11 @@ def run(
     save_meta_cache(meta_cache, "data/crawl_state/repo_meta_cache.json")
     save_content_cache(content_cache, "data/crawl_state/content_cache.json")
     save_tree_cache(tree_cache, "data/crawl_state/tree_cache.json")
+
+    # Persist discovery timestamp so next incremental/discover run can filter by it.
+    # Use run_started (not now) so repos pushed *during* this crawl aren't missed.
+    crawl_state["last_discovery_at"] = run_started
+    save_crawl_state(crawl_state, "topic")
 
     written = write_jsonl(records, output_path, append=resume)
     log.info("Topic crawler done: %d records written to %s", written, output_path)
