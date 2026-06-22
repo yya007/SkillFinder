@@ -74,11 +74,19 @@ canonical URL → fetch each **once**. Today a repo found by marketplace + topic
 skillsmp is fetched 3×. Pair with a per-run in-memory (and optionally on-disk)
 cache of fetched metadata/content keyed by canonical repo URL.
 
-### ④ Cut `search/code` reliance — **medium impact, medium effort**
-Cache the discovered repo list and run discovery with date filters
-(`pushed:>last-run`) so search only surfaces *new* repos (few calls). Prefer
-repo/topic search (30/min) over code search (10/min) where the query allows.
-Removes the 60s-cooldown stalls that dominate wall-clock.
+### ④ Cut `search/code` reliance — **attempted, reverted (date-filter is unsound for topic discovery)**
+The obvious approach — date-filter discovery with `pushed:>last-run` so search
+only surfaces *new* repos — was implemented and then **reverted**. It is
+fundamentally wrong for *topic* discovery: a repo that adds a skill topic without
+a new commit keeps its old `pushed_at`, so `pushed:>since` excludes it, the
+advancing watermark moves past it, and it becomes permanently undiscoverable —
+and GitHub search has no "topic-added-since" qualifier to compensate. (~10 codex
+findings chased the watermark before identifying the root flaw.) A correct
+incremental discovery must enumerate the full topic result set each run and diff
+against a persisted repo-list, not rely on a `pushed_at` watermark. Topic
+discovery is left full (repo-search at 30/min was never the bottleneck); the
+remaining lever is preferring repo-search over code-search in the
+code-search-heavy crawlers (skillsmp shards).
 
 ### ⑤ Batch metadata via GraphQL — **medium impact, medium effort**
 Replace per-repo `/repos/{o}/{r}` REST calls with one GraphQL query for ≤100

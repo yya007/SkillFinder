@@ -190,23 +190,26 @@ monorepo; fetch each via raw (free, per ①). Replaces 1 Contents call per file.
 
 ---
 
-### ⑤ Batch repo metadata via GraphQL (≤100 repos/call)
-**Priority: medium**
-Replace per-repo `/repos/{o}/{r}` REST calls with a GraphQL query (stars/
-pushed_at/default_branch) for up to 100 repos at once — ~1–2 points of the
-separate 5,000-point/hr GraphQL pool.
-
-**Files:** `crawlers/base.py` (new GraphQL helper), crawler call sites.
+### ⑤ Batch repo metadata via GraphQL (≤100 repos/call) — DONE
+**Done.** `fetch_repo_metadata_batch` in `crawlers/base.py` fetches
+stars/pushedAt/defaultBranch/topics for ≤100 repos per GraphQL POST (separate
+5,000-point/hr pool); wired into the topic crawler with a per-repo REST fallback.
 
 ---
 
-### ④ Reduce search/code reliance (the 10/min stall)
-**Priority: medium**
-Cache the discovered repo list; run discovery with date filters
-(`pushed:>last-run`) so search surfaces only new repos. Prefer repo/topic search
-(30/min) over code search (10/min) where possible.
+### ④ Reduce search/code reliance (the 10/min stall) — REVERTED, needs redesign
+**Status: attempted and reverted.** The date-filter approach
+(`topic:X pushed:>last-run`) is **unsound for topic discovery**: a repo that
+*adds a skill topic without a new commit* keeps its old `pushed_at`, so it is
+filtered out and the advancing watermark makes it permanently undiscoverable —
+and GitHub search has no "topic-added-since" qualifier. A correct incremental
+discovery needs a different mechanism (e.g. enumerate the full topic result set
+each run and diff against a persisted repo-list, never a `pushed_at` watermark),
+or accept that discovery search is cheap enough (repo-search is 30/min, never the
+bottleneck) and leave it full. For code-search-heavy crawlers (skillsmp shards),
+the separate lever is to lean on repo-search over code-search where possible.
 
-**Files:** `crawlers/skillsmp_crawler.py`, `crawlers/topic_crawler.py`, `crawlers/marketplace_crawler.py`.
+**Files:** `crawlers/skillsmp_crawler.py`, `crawlers/marketplace_crawler.py`.
 
 ---
 
@@ -218,13 +221,10 @@ overhead — only if ①–⑥ are insufficient.
 
 **Files:** `crawlers/base.py` (session/token rotation).
 
-### ⑥b Cache find_skill_md_paths by repo + HEAD SHA
-**Priority: medium** *(follow-up from the ①②③ impact measurement)*
-After ①②③, the residual metered cost per repo is the recursive Trees call in
-`find_skill_md_paths` (one metered call per repo every run, even when nothing
-changed). Cache the `{path: blob_sha}` result keyed by `repo + HEAD commit SHA`
-(one cheap `fetch_commit_sha` call, or reuse the ETag-cached metadata's known
-HEAD), and skip the Trees call when HEAD is unchanged. This is what makes a warm
-run approach zero metered cost *per repo*, not just per skill.
-
-**Files:** `crawlers/base.py` (`find_skill_md_paths`, `fetch_commit_sha`).
+### ⑥b Cache find_skill_md_paths — DONE
+**Done.** `find_skill_md_paths_cached` in `crawlers/base.py` skips the recursive
+Trees call when a repo's `(pushed_at, default_branch)` is unchanged, reusing the
+cached `{path: blob_sha}` map (keyed on default branch because a branch change
+re-resolves `HEAD` to a different tree without bumping `pushed_at`; empty/failed
+lookups are never cached). Wired into the topic crawler. Makes a warm run
+approach zero metered cost *per unchanged repo*.
