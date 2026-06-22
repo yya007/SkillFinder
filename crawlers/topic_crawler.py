@@ -229,8 +229,10 @@ def run(
     Returns:
         Number of new records written.
     """
-    # Resolve mode: incremental aliases resume behaviour
-    if mode == "incremental":
+    # Resolve mode: incremental and discover both date-filter discovery to a partial
+    # (new/changed) set, so they must APPEND to and dedup against the existing output,
+    # never rewrite it. Only full mode rewrites.
+    if mode in ("incremental", "discover"):
         resume = True
     import json as _json
 
@@ -294,10 +296,12 @@ def run(
             continue
         to_process.append(full_name)
 
-    # Bulk-fetch metadata only for repos that will actually be processed via a single
-    # GraphQL batch. Each chunk of ≤100 repos costs one GraphQL POST (separate
-    # 5k-point/hr pool). Repos absent from the result fall back to per-repo REST below.
-    batch_meta = fetch_repo_metadata_batch(session, to_process)
+    # Lazily batch-fetch metadata in chunks of 100 as the loop consumes repos.
+    # A small --limit should not pay GraphQL for repos that are never processed.
+    # Each chunk of ≤100 repos costs one GraphQL POST (separate 5k-point/hr pool).
+    # Repos absent from any chunk's result fall back to per-repo REST below.
+    batch_meta: dict = {}
+    _batched_upto = 0
 
     # Cache (meta, skill_md_paths) per repo to avoid repeated API calls
     _repo_cache: dict[str, tuple[dict, list[str]]] = {}
@@ -310,11 +314,18 @@ def run(
     truncated = False
     had_failure = False
 
-    for full_name in to_process:
+    for idx, full_name in enumerate(to_process):
         if limit is not None and len(records) >= limit:
             log.info("Reached limit of %d records; stopping.", limit)
             truncated = True
             break
+
+        # Lazily batch-fetch metadata in chunks of 100 as the loop reaches them, so a
+        # small --limit doesn't pay GraphQL for repos that are never processed.
+        if idx >= _batched_upto:
+            chunk = to_process[_batched_upto:_batched_upto + 100]
+            batch_meta.update(fetch_repo_metadata_batch(session, chunk))
+            _batched_upto += 100
 
         repo_url = f"https://github.com/{full_name}"
 

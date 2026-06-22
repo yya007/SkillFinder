@@ -722,3 +722,129 @@ class TestWatermarkAdvancement:
             run(str(tmp_path / "out.jsonl"), mode="discover")
 
         mock_save_state.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# P1 fix: discover mode must append, not truncate
+# ---------------------------------------------------------------------------
+
+class TestDiscoverModeAppend:
+    """P1: discover mode date-filters to only new repos, so it MUST append."""
+
+    def test_discover_mode_appends_not_truncates(self, tmp_path):
+        """discover mode must call write_jsonl with append=True."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"), \
+             patch("crawlers.topic_crawler.write_jsonl") as mock_write:
+
+            mock_disc.return_value = (["user/skill-a"], True)
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = None
+            mock_write.return_value = 1
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, mode="discover")
+
+        mock_write.assert_called_once()
+        # append must be True for discover mode
+        call = mock_write.call_args
+        append_val = call.kwargs.get("append") if call.kwargs.get("append") is not None else call.args[2]
+        assert append_val is True, f"Expected append=True for discover mode, got: {call}"
+
+    def test_full_mode_does_not_append(self, tmp_path):
+        """full mode must call write_jsonl with append=False (rewrites)."""
+        from crawlers.topic_crawler import run
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch", return_value={}), \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"), \
+             patch("crawlers.topic_crawler.write_jsonl") as mock_write:
+
+            mock_disc.return_value = (["user/skill-a"], True)
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = None
+            mock_write.return_value = 1
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, mode="full")
+
+        mock_write.assert_called_once()
+        call = mock_write.call_args
+        append_val = call.kwargs.get("append") if call.kwargs.get("append") is not None else call.args[2]
+        assert append_val is False, f"Expected append=False for full mode, got: {call}"
+
+
+# ---------------------------------------------------------------------------
+# P2 fix: lazy batch-fetch respects --limit
+# ---------------------------------------------------------------------------
+
+class TestLazyBatchRespectsLimit:
+    """P2: GraphQL batch should not eagerly fetch all repos when limit is small."""
+
+    def test_lazy_batch_respects_limit(self, tmp_path):
+        """With limit=1 and 250 repos, fetch_repo_metadata_batch should be called
+        AT MOST twice (one chunk of 100 at most, possibly two if boundary is hit),
+        not 3 chunks for all 250 repos."""
+        from crawlers.topic_crawler import run
+
+        repos_250 = [f"u/r{i}" for i in range(250)]
+
+        with patch("crawlers.topic_crawler._discover_topic_repos") as mock_disc, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_batch") as mock_batch, \
+             patch("crawlers.topic_crawler.fetch_repo_metadata_cached") as mock_meta, \
+             patch("crawlers.topic_crawler.find_skill_md_paths_cached") as mock_paths, \
+             patch("crawlers.topic_crawler.fetch_skill_md_cached") as mock_skill_md, \
+             patch("crawlers.topic_crawler.load_meta_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_meta_cache"), \
+             patch("crawlers.topic_crawler.load_content_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_content_cache"), \
+             patch("crawlers.topic_crawler.load_tree_cache", return_value={}), \
+             patch("crawlers.topic_crawler.save_tree_cache"), \
+             patch("crawlers.topic_crawler.load_crawl_state", return_value={}), \
+             patch("crawlers.topic_crawler.save_crawl_state"):
+
+            mock_disc.return_value = (repos_250, True)
+            mock_batch.return_value = {}  # empty -> REST fallback fills meta
+            mock_meta.return_value = _mock_meta()
+            mock_paths.return_value = {"SKILL.md": "sha1"}
+            mock_skill_md.return_value = SAMPLE_SKILL_MD
+
+            out = str(tmp_path / "out.jsonl")
+            run(out, limit=1)
+
+        # With limit=1, only the first chunk (repos 0-99) should be fetched,
+        # so call count must be at most 2 (NOT 3 for all 250 repos).
+        assert mock_batch.call_count <= 2, (
+            f"Expected at most 2 batch calls with limit=1, got {mock_batch.call_count}"
+        )
+        # Each individual call must be a chunk of at most 100 repos (not all 250 at once).
+        for i, c in enumerate(mock_batch.call_args_list):
+            chunk = c.args[1]  # second positional arg is the list of repo names
+            assert len(chunk) <= 100, (
+                f"Batch call {i} sent {len(chunk)} repos — expected ≤100 (lazy chunking)"
+            )
