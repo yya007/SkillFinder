@@ -92,58 +92,59 @@ Results in **< 200 ms**, ranked by semantic relevance and community trust, insta
 
 ### Install
 
-**Option 1 — npx (easiest, auto-detects your agent):**
+**Claude Code — plugin marketplace (one command each):**
+
+```
+/plugin marketplace add yya007/SkillFinder
+/plugin install skill-finder@skillfinder
+```
+
+Then run **Finish setup** below — `/plugin install` copies the files but does not run setup steps.
+
+**Codex, OpenClaw & other agents — skills directory:**
+
+Option A — `npx skills` (detects which agents you have and copies to the right place):
 
 ```bash
 npx skills add yya007/SkillFinder
 ```
 
-Uses the [`skills`](https://skills.sh) CLI — detects which agents you have installed and copies files to the right directory automatically.
-
-**Option 2 — npm:**
+Option B — npm + copy:
 
 ```bash
 npm install -g @yya007/skill-finder
-```
-
-Then copy to your agent's skills directory:
-
-| Agent | Skills directory |
-|-------|-----------------|
-| Claude Code | `~/.claude/skills/skill-finder` |
-| OpenClaw | `~/.openclaw/skills/skill-finder` |
-| Codex | `~/.codex/skills/skill-finder` |
-
-```bash
-# Copy once (pick your agent's dir from the table above):
-cp -r "$(npm root -g)/@yya007/skill-finder" ~/.claude/skills/skill-finder
+# copy into your agent's skills dir (pick one):
+cp -r "$(npm root -g)/@yya007/skill-finder" ~/.codex/skills/skill-finder       # Codex
+#                                            ~/.openclaw/skills/skill-finder    # OpenClaw
+#                                            ~/.claude/skills/skill-finder      # Claude Code (manual alt to the plugin above)
 ```
 
 **Finish setup (all platforms):**
 
 ```bash
-cd ~/.claude/skills/skill-finder   # or your platform's skills dir
-pip install -r scripts/requirements.txt
+# Python runtime deps for the search script:
+pip install numpy faiss-cpu requests pyyaml
+# the embedding model (Ollama must be installed first — https://ollama.com/install):
 ollama pull qwen3-embedding:0.6b
 ```
 
-That's it. Ask your agent: _"find a skill for X"_ or invoke the skill explicitly  _"/skill-finder"_
+That's it. Ask your agent: _"find a skill for X"_ — or invoke it explicitly: _"/skill-finder"_
 
-> **OpenClaw:** ClawHub listing coming soon. Until then, install via npm or
+> **OpenClaw:** ClawHub listing coming soon. Until then use the npm/`npx skills` install above, or
 > `git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder`.
 
 <details>
-<summary>Alternative: git clone</summary>
+<summary>Alternative: git clone (Codex / OpenClaw / manual Claude Code)</summary>
 
 ```bash
-# Claude Code
-git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
-
 # Codex
 git clone https://github.com/yya007/SkillFinder ~/.codex/skills/skill-finder
 
 # OpenClaw
 git clone https://github.com/yya007/SkillFinder ~/.openclaw/skills/skill-finder
+
+# Claude Code (the /plugin install above is preferred)
+git clone https://github.com/yya007/SkillFinder ~/.claude/skills/skill-finder
 ```
 
 Then run the finish-setup block above.
