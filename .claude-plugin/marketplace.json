@@ -1,0 +1,16 @@
+{
+  "name": "skillfinder",
+  "owner": {
+    "name": "yya007"
+  },
+  "plugins": [
+    {
+      "name": "skill-finder",
+      "source": "./",
+      "description": "Search 42,000+ curated agent skills with a natural-language description of your task; get ranked matches with install commands. Local FAISS index — no API calls, no latency.",
+      "version": "0.1.2",
+      "license": "MIT",
+      "keywords": ["skills", "search", "discovery", "faiss"]
+    }
+  ]
+}

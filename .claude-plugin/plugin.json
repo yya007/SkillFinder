@@ -1,0 +1,12 @@
+{
+  "name": "skill-finder",
+  "version": "0.1.2",
+  "description": "Search 42,000+ curated agent skills by describing what you want to do. Runs entirely on-device via a local FAISS index — no API calls, no latency, no cost per query.",
+  "author": {
+    "name": "yya007"
+  },
+  "homepage": "https://github.com/yya007/SkillFinder",
+  "repository": "https://github.com/yya007/SkillFinder",
+  "license": "MIT",
+  "keywords": ["skills", "search", "discovery", "faiss", "vector-search"]
+}
