@@ -1,0 +1,85 @@
+name: Publish npm package
+
+# Auto-publishes @yya007/skill-finder to npm when a fresh index lands on master
+# (i.e. data/version.txt changes). The index itself is built LOCALLY and merged
+# via PR — CI cannot rebuild it (see PRD-005). This job then bumps the patch
+# version, publishes, tags v<version>, and stamps the release log.
+#
+# Requires the NPM_TOKEN repo secret = a granular npm token with "Bypass 2FA"
+# enabled (set via: gh secret set NPM_TOKEN). The version is bumped from the
+# *published* npm version, so a missed commit/push self-heals on the next run.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - data/version.txt
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (pack + validate only — does NOT publish, commit, or tag)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # commit the version bump + push the tag
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # On a push (fresh index merged) → real publish. On manual dispatch →
+      # honor the dry_run input (default true) so the flow can be tested safely.
+      - name: Resolve dry-run mode
+        run: echo "DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}" >> "$GITHUB_ENV"
+
+      - name: Compute next version (patch bump from the published version)
+        run: |
+          PUB=$(npm view @yya007/skill-finder version 2>/dev/null || echo "0.0.0")
+          npm version "$PUB" --no-git-tag-version --allow-same-version >/dev/null
+          npm version patch --no-git-tag-version >/dev/null
+          NEW=$(node -p "require('./package.json').version")
+          echo "published=$PUB  ->  new=$NEW"
+          echo "NEW_VERSION=$NEW" >> "$GITHUB_ENV"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::Dry run — npm publish --dry-run (nothing is published)"
+            npm publish --dry-run --access public
+          else
+            npm publish --access public
+            echo "::notice::Published @yya007/skill-finder@${NEW_VERSION}"
+          fi
+
+      # Only on a real publish: record the npm version, commit the bump, tag, push.
+      - name: Stamp release log, commit bump, tag, push
+        if: env.DRY_RUN != 'true'
+        run: |
+          python pipeline/update_release_log.py --npm-version "${NEW_VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json data/release_log.jsonl docs/release-log.md
+          git commit -m "chore: publish npm v${NEW_VERSION} [skip ci]"
+          git tag "v${NEW_VERSION}"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          git push origin "v${NEW_VERSION}"

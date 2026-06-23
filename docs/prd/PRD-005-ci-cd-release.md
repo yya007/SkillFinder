@@ -29,6 +29,15 @@ run since launch was cancelled or failed; a manual run on 2026-06-22 produced on
   cannot accept incremental adds. Because the production corpus is > 30k, CI is
   effectively dormant until a local rebuild lowers the count or the index type changes;
   it exists to avoid weekly false-failures and to self-activate for smaller corpora.
+- **npm publish is automated (`npm-publish.yml`).** When a fresh index lands on
+  `master` (a `data/version.txt` change from a merged local rebuild), this workflow
+  patch-bumps the package, publishes `@yya007/skill-finder` to npm, tags `v<version>`,
+  and stamps the release log — all on GitHub runners, no local machine. It bumps from
+  the *published* npm version (self-healing across runs) and requires the `NPM_TOKEN`
+  secret (a granular npm token with "Bypass 2FA"). `workflow_dispatch` supports a
+  `dry_run` (default true) to test without publishing. The index build stays manual
+  (local); only the npm release step is hands-off. The `npm-release` skill remains for
+  ad-hoc/manual publishes.
 
 The functional requirements below describe the original full-rebuild-in-CI design and
 are retained for history; F5 (incremental strategy) is what CI now implements.
