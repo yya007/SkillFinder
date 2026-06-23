@@ -42,3 +42,6 @@ htmlcov/
 superpowers/
 .superpowers/
 memory/
+
+# Local agent memory — symlinked, not part of this repo
+/memory
