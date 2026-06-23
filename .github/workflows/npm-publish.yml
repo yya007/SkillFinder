@@ -83,3 +83,13 @@ jobs:
           git tag "v${NEW_VERSION}"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
           git push origin "v${NEW_VERSION}"
+
+      # Publish a GitHub Release for the tag with a standardized body, so every
+      # release on the Releases page has the same structure.
+      - name: Create GitHub release (standardized notes)
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python pipeline/render_release_notes.py --npm-version "${NEW_VERSION}" > /tmp/release-notes.md
+          gh release create "v${NEW_VERSION}" --title "v${NEW_VERSION}" --notes-file /tmp/release-notes.md
